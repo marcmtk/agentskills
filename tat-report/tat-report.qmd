@@ -1,0 +1,479 @@
+---
+title: "Turnaround Time Report"
+subtitle: "Weekly TAT Analysis by Examination Category"
+author: "Lab Intelligence"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+theme_set(theme_minimal(base_size = 12))
+
+# Category labels
+category_labels <- c(
+ "101" = "101 - Culture",
+ "221" = "221 - PCR",
+ "218" = "218 - POCT PCR"
+)
+```
+
+```{r}
+#| label: load-data
+# Load data (generate first if needed)
+if (!file.exists("tat_data.rds")) {
+ source("generate_data.R")
+}
+tat_data <- readRDS("tat_data.rds")
+
+# Calculate TAT segments (in minutes)
+tat_analysis <- tat_data |>
+ mutate(
+   # Segment 1: Pre-lab (afsendt -> modtaget)
+   seg1_prelab = as.numeric(difftime(modtaget, afsendt, units = "mins")),
+   # Segment 2: In-lab (modtaget -> besvaret)
+   seg2_inlab = as.numeric(difftime(besvaret, modtaget, units = "mins")),
+   # Segment 3: Post-lab (besvaret -> kvitteret)
+   seg3_postlab = as.numeric(difftime(kvitteret, besvaret, units = "mins")),
+   # Segment 4: End-to-end lab (afsendt -> besvaret)
+   seg4_e2e_lab = as.numeric(difftime(besvaret, afsendt, units = "mins")),
+   # Segment 5: Total clinical (afsendt -> kvitteret)
+   seg5_total = as.numeric(difftime(kvitteret, afsendt, units = "mins")),
+   # Week for grouping
+   week = floor_date(afsendt, "week"),
+   kategori_label = category_labels[kategori]
+ )
+```
+
+## Overview
+
+This report analyzes turnaround times across `r n_distinct(tat_data$kategori)` examination categories over `r n_distinct(floor_date(tat_data$afsendt, "week"))` weeks.
+
+```{r}
+#| label: tbl-overview
+#| tbl-cap: "Sample counts by category"
+tat_analysis |>
+ group_by(Category = kategori_label) |>
+ summarise(
+   `Total Samples` = n(),
+   `Pending Result` = sum(is.na(besvaret)),
+   `Pending Acknowledgment` = sum(is.na(kvitteret) & !is.na(besvaret)),
+   .groups = "drop"
+ ) |>
+ gt() |>
+ tab_header(title = "Sample Volume Summary")
+```
+
+## TAT Segments
+
+The turnaround time is broken into five segments:
+| Segment | Definition | Measures |
+|---------|------------|----------|
+| 1: Pre-lab | Requisition → Received | Collection & transport time |
+| 2: In-lab | Received → Released | Laboratory processing time |
+| 3: Post-lab | Released → Acknowledged | Clinical uptake time |
+| 4: End-to-end | Requisition → Released | Total lab responsibility |
+| 5: Total | Requisition → Acknowledged | Complete clinical cycle |
+
+
+## Process Flow by Percentile
+
+```{r}
+#| label: setup-helpers
+
+# Format time helper
+format_time <- function(mins) {
+  if(is.na(mins)) return(NA_character_)
+  if (mins < 60) {
+    paste0(round(mins), "m")
+  } else if (mins < 24 * 60) {
+    paste0(round(mins / 60, 1), "h")
+  } else {
+    paste0(round(mins / (24 * 60), 1), "d")
+  }
+}
+
+# Calculate percentiles for all segments by category
+calc_flow_percentiles <- function(data, probs = c(0.5, 0.8, 0.9, 0.95, 0.99)) {
+  data |>
+    filter(!is.na(kvitteret)) |>
+    group_by(kategori_label) |>
+    summarise(
+      across(
+        c(seg1_prelab, seg2_inlab, seg3_postlab),
+        list(
+          p50 = ~quantile(.x, 0.50, na.rm = TRUE),
+          p80 = ~quantile(.x, 0.80, na.rm = TRUE),
+          p90 = ~quantile(.x, 0.90, na.rm = TRUE),
+          p95 = ~quantile(.x, 0.95, na.rm = TRUE),
+          p99 = ~quantile(.x, 0.99, na.rm = TRUE)
+        )
+      ),
+      .groups = "drop"
+    )
+}
+
+flow_percentiles <- calc_flow_percentiles(tat_analysis)
+
+# Create process flow text for a single row
+make_flow_text <- function(seg1, seg2, seg3) {
+  paste0(
+    "Req ──", format_time(seg1), "──▶ ",
+    "Rec ──", format_time(seg2), "──▶ ",
+    "Rel ──", format_time(seg3), "──▶ Ack"
+  )
+}
+```
+
+```{r}
+#| label: fig-process-flow-arrows
+#| fig-cap: "TAT Process Flow by Percentile"
+#| fig-height: 8
+#| fig-width: 12
+
+# Reshape data for plotting
+flow_long <- flow_percentiles |>
+  pivot_longer(
+    cols = -kategori_label,
+    names_to = c("segment", "percentile"),
+    names_pattern = "(.+)_(p\\d+)",
+    values_to = "minutes"
+  ) |>
+  pivot_wider(
+    names_from = segment,
+    values_from = minutes
+  ) |>
+  mutate(
+    percentile = factor(
+      percentile,
+      levels = c("p50", "p80", "p90", "p95", "p99"),
+      labels = c("P50", "P80", "P90", "P95", "P99")
+    ),
+    flow_text = pmap_chr(
+      list(seg1_prelab, seg2_inlab, seg3_postlab),
+      make_flow_text
+    )
+  )
+
+# Create the arrow-based visualization
+ggplot(flow_long, aes(y = percentile)) +
+  # Segment 1: Req -> Rec
+  geom_segment(
+    aes(x = 0, xend = seg1_prelab, yend = percentile),
+    arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+    linewidth = 1, color = "#66c2a5"
+  ) +
+  geom_text(
+    aes(x = seg1_prelab / 2, label = sapply(seg1_prelab, format_time)),
+    vjust = -0.5, size = 3, color = "#66c2a5", fontface = "bold"
+  ) +
+  # Segment 2: Rec -> Rel
+  geom_segment(
+    aes(x = seg1_prelab, xend = seg1_prelab + seg2_inlab, yend = percentile),
+    arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+    linewidth = 1, color = "#fc8d62"
+  ) +
+  geom_text(
+    aes(x = seg1_prelab + seg2_inlab / 2, label = sapply(seg2_inlab, format_time)),
+    vjust = -0.5, size = 3, color = "#fc8d62", fontface = "bold"
+  ) +
+  # Segment 3: Rel -> Ack
+  geom_segment(
+    aes(x = seg1_prelab + seg2_inlab, xend = seg1_prelab + seg2_inlab + seg3_postlab, yend = percentile),
+    arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+    linewidth = 1, color = "#8da0cb"
+  ) +
+  geom_text(
+    aes(x = seg1_prelab + seg2_inlab + seg3_postlab / 2, label = sapply(seg3_postlab, format_time)),
+    vjust = -0.5, size = 3, color = "#8da0cb", fontface = "bold"
+  ) +
+  # Node labels
+  geom_point(aes(x = 0), size = 3, color = "black") +
+  geom_point(aes(x = seg1_prelab), size = 3, color = "black") +
+  geom_point(aes(x = seg1_prelab + seg2_inlab), size = 3, color = "black") +
+  geom_point(aes(x = seg1_prelab + seg2_inlab + seg3_postlab), size = 3, color = "black") +
+  # Facet by category
+  facet_wrap(~kategori_label, ncol = 1, scales = "free_x") +
+  scale_x_continuous(
+    labels = function(x) sapply(x, format_time),
+    expand = expansion(mult = c(0.02, 0.05))
+  ) +
+  scale_y_discrete(limits = rev) +
+  labs(
+    x = "Cumulative Time",
+    y = "Percentile",
+    title = "TAT Process Flow by Category and Percentile",
+    subtitle = "Req ──Pre-lab──▶ Rec ──In-lab──▶ Rel ──Post-lab──▶ Ack",
+    caption = "Green: Pre-lab | Orange: In-lab | Blue: Post-lab"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    strip.text = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(family = "mono")
+  )
+```
+
+### Text Summary
+
+```{r}
+#| label: flow-text-summary
+#| results: asis
+
+for (cat in unique(flow_long$kategori_label)) {
+  cat("\n\n**", cat, "**\n\n", sep = "")
+  cat("```\n")
+  cat_data <- flow_long |> filter(kategori_label == cat)
+  for (i in seq_len(nrow(cat_data))) {
+    cat(cat_data$percentile[i], " ", cat_data$flow_text[i], "\n", sep = "")
+  }
+  cat("```\n")
+}
+```
+
+## Percentile Distribution: In-Lab TAT (Segment 2)
+
+```{r}
+#| label: tbl-percentiles-inlab
+#| tbl-cap: "In-lab TAT percentiles by category"
+percentiles <- c(0.5, 0.8, 0.9, 0.95, 0.99)
+
+inlab_percentiles <- tat_analysis |>
+ filter(!is.na(seg2_inlab)) |>
+ group_by(Category = kategori_label) |>
+ summarise(
+   P50 = quantile(seg2_inlab, 0.50),
+   P80 = quantile(seg2_inlab, 0.80),
+   P90 = quantile(seg2_inlab, 0.90),
+   P95 = quantile(seg2_inlab, 0.95),
+   P99 = quantile(seg2_inlab, 0.99),
+   .groups = "drop"
+ )
+
+inlab_percentiles |>
+ gt() |>
+ tab_header(
+   title = "In-Lab TAT (Segment 2): Percentile Distribution",
+   subtitle = "Time from sample received to result released"
+ ) |>
+ fmt_number(columns = -Category, decimals = 0, pattern = "{x} min") |>
+ cols_align(align = "right", columns = -Category)
+```
+
+```{r}
+#| label: fig-percentiles-inlab
+#| fig-cap: "In-lab TAT percentile distribution by category"
+#| fig-height: 5
+percentile_long <- inlab_percentiles |>
+ pivot_longer(-Category, names_to = "Percentile", values_to = "minutes") |>
+ mutate(Percentile = factor(Percentile, levels = c("P50", "P80", "P90", "P95", "P99")))
+
+ggplot(percentile_long, aes(x = Percentile, y = minutes, color = Category, group = Category)) +
+ geom_line(linewidth = 1) +
+ geom_point(size = 3) +
+ scale_color_brewer(palette = "Set2") +
+ scale_y_continuous(labels = function(x) sapply(x, format_time)) +
+ labs(
+   x = "Percentile",
+   y = "Time",
+   title = "In-Lab TAT Percentile Distribution"
+ ) +
+ theme(legend.position = "bottom")
+```
+
+## All Segments: Percentile Tables
+
+::: {.panel-tabset}
+
+### Pre-lab (Segment 1)
+```{r}
+#| label: tbl-percentiles-prelab
+tat_analysis |>
+ filter(!is.na(seg1_prelab)) |>
+ group_by(Category = kategori_label) |>
+ summarise(
+   P50 = quantile(seg1_prelab, 0.50),
+   P80 = quantile(seg1_prelab, 0.80),
+   P90 = quantile(seg1_prelab, 0.90),
+   P95 = quantile(seg1_prelab, 0.95),
+   P99 = quantile(seg1_prelab, 0.99),
+   .groups = "drop"
+ ) |>
+ gt() |>
+ tab_header(title = "Pre-lab TAT (Requisition → Received)") |>
+ fmt_number(columns = -Category, decimals = 0, pattern = "{x} min")
+```
+
+### In-lab (Segment 2)
+```{r}
+#| label: tbl-percentiles-inlab-tab
+inlab_percentiles |>
+ gt() |>
+ tab_header(title = "In-lab TAT (Received → Released)") |>
+ fmt_number(columns = -Category, decimals = 0, pattern = "{x} min")
+```
+
+### Post-lab (Segment 3)
+```{r}
+#| label: tbl-percentiles-postlab
+tat_analysis |>
+ filter(!is.na(seg3_postlab)) |>
+ group_by(Category = kategori_label) |>
+ summarise(
+   P50 = quantile(seg3_postlab, 0.50),
+   P80 = quantile(seg3_postlab, 0.80),
+   P90 = quantile(seg3_postlab, 0.90),
+   P95 = quantile(seg3_postlab, 0.95),
+   P99 = quantile(seg3_postlab, 0.99),
+   .groups = "drop"
+ ) |>
+ gt() |>
+ tab_header(title = "Post-lab TAT (Released → Acknowledged)") |>
+ fmt_number(columns = -Category, decimals = 0, pattern = "{x} min")
+```
+
+### End-to-end (Segment 4)
+```{r}
+#| label: tbl-percentiles-e2e
+tat_analysis |>
+ filter(!is.na(seg4_e2e_lab)) |>
+ group_by(Category = kategori_label) |>
+ summarise(
+   P50 = quantile(seg4_e2e_lab, 0.50),
+   P80 = quantile(seg4_e2e_lab, 0.80),
+   P90 = quantile(seg4_e2e_lab, 0.90),
+   P95 = quantile(seg4_e2e_lab, 0.95),
+   P99 = quantile(seg4_e2e_lab, 0.99),
+   .groups = "drop"
+ ) |>
+ gt() |>
+ tab_header(title = "End-to-end Lab TAT (Requisition → Released)") |>
+ fmt_number(columns = -Category, decimals = 0, pattern = "{x} min")
+```
+
+### Total (Segment 5)
+```{r}
+#| label: tbl-percentiles-total
+tat_analysis |>
+ filter(!is.na(seg5_total)) |>
+ group_by(Category = kategori_label) |>
+ summarise(
+   P50 = quantile(seg5_total, 0.50),
+   P80 = quantile(seg5_total, 0.80),
+   P90 = quantile(seg5_total, 0.90),
+   P95 = quantile(seg5_total, 0.95),
+   P99 = quantile(seg5_total, 0.99),
+   .groups = "drop"
+ ) |>
+ gt() |>
+ tab_header(title = "Total Clinical TAT (Requisition → Acknowledged)") |>
+ fmt_number(columns = -Category, decimals = 0, pattern = "{x} min")
+```
+
+:::
+
+## Weekly Trend: In-Lab TAT (P90)
+
+```{r}
+#| label: fig-trend
+#| fig-cap: "Weekly trend of In-lab TAT (90th percentile)"
+#| fig-height: 5
+weekly_trend <- tat_analysis |>
+ filter(!is.na(seg2_inlab)) |>
+ group_by(week, kategori_label) |>
+ summarise(
+   p90 = quantile(seg2_inlab, 0.90),
+   n = n(),
+   .groups = "drop"
+ )
+
+ggplot(weekly_trend, aes(x = week, y = p90, color = kategori_label)) +
+ geom_line(linewidth = 1) +
+ geom_point(size = 3) +
+ scale_color_brewer(palette = "Set2", name = "Category") +
+ scale_x_datetime(date_labels = "%b %d", date_breaks = "1 week") +
+ scale_y_continuous(labels = function(x) sapply(x, format_time)) +
+ labs(
+   x = "Week",
+   y = "P90 In-lab TAT",
+   title = "In-Lab TAT Trend (90th Percentile)",
+   subtitle = "Weekly performance by category"
+ ) +
+ theme(legend.position = "bottom")
+```
+
+## Distribution: In-Lab TAT
+
+```{r}
+#| label: fig-distribution
+#| fig-cap: "Distribution of In-lab TAT by category"
+#| fig-height: 5
+ggplot(
+ tat_analysis |> filter(!is.na(seg2_inlab)),
+ aes(x = seg2_inlab, fill = kategori_label)
+) +
+ geom_histogram(bins = 30, alpha = 0.7, position = "identity") +
+ facet_wrap(~kategori_label, scales = "free", ncol = 1) +
+ scale_fill_brewer(palette = "Set2", guide = "none") +
+ scale_x_continuous(labels = function(x) sapply(x, format_time)) +
+ labs(
+   x = "In-lab TAT",
+   y = "Count",
+   title = "In-Lab TAT Distribution by Category"
+ )
+```
+
+## Pending Samples
+
+```{r}
+#| label: tbl-pending
+#| tbl-cap: "Samples pending result or acknowledgment"
+pending <- tat_analysis |>
+ filter(is.na(besvaret) | is.na(kvitteret)) |>
+ mutate(
+   status = case_when(
+     is.na(besvaret) ~ "Pending result",
+     is.na(kvitteret) ~ "Pending acknowledgment"
+   ),
+   age_hours = as.numeric(difftime(Sys.time(), afsendt, units = "hours"))
+ ) |>
+ select(proevenr, kategori_label, status, afsendt, age_hours)
+
+if (nrow(pending) > 0) {
+ pending |>
+   arrange(desc(age_hours)) |>
+   gt() |>
+   tab_header(title = "Pending Samples") |>
+   fmt_datetime(columns = afsendt, date_style = "iso", time_style = "iso") |>
+   fmt_number(columns = age_hours, decimals = 1, pattern = "{x}h") |>
+   cols_label(
+     proevenr = "Sample ID",
+     kategori_label = "Category",
+     status = "Status",
+     afsendt = "Requisition Time",
+     age_hours = "Age"
+   )
+} else {
+ cat("No pending samples.")
+}
+```
+
