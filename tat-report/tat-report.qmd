@@ -93,65 +93,160 @@ The turnaround time is broken into five segments:
 | 5: Total | Requisition → Acknowledged | Complete clinical cycle |
 
 
-## Process Flow: Median TAT by Category
+## Process Flow by Percentile
 
 ```{r}
-#| label: fig-process-flow
-#| fig-cap: "Median TAT by segment and category (completed samples only)"
-#| fig-height: 5
-# Calculate medians for completed samples
-flow_data <- tat_analysis |>
- filter(!is.na(kvitteret)) |>
- group_by(kategori_label) |>
- summarise(
-   seg1 = median(seg1_prelab, na.rm = TRUE),
-   seg2 = median(seg2_inlab, na.rm = TRUE),
-   seg3 = median(seg3_postlab, na.rm = TRUE),
-   .groups = "drop"
- ) |>
- pivot_longer(cols = starts_with("seg"), names_to = "segment", values_to = "minutes") |>
- mutate(
-   segment_label = case_match(
-     segment,
-     "seg1" ~ "Pre-lab",
-     "seg2" ~ "In-lab",
-     "seg3" ~ "Post-lab"
-   ),
-   segment_label = factor(segment_label, levels = c("Pre-lab", "In-lab", "Post-lab"))
- )
+#| label: setup-helpers
 
 # Format time helper
 format_time <- function(mins) {
- if(is.na(mins)) return(NA_character_)
- if (mins < 60) {
-   paste0(round(mins), "m")
- } else if (mins < 24 * 60) {
-   paste0(round(mins / 60, 1), "h")
- } else {
-   paste0(round(mins / (24 * 60), 1), "d")
- }
+  if(is.na(mins)) return(NA_character_)
+  if (mins < 60) {
+    paste0(round(mins), "m")
+  } else if (mins < 24 * 60) {
+    paste0(round(mins / 60, 1), "h")
+  } else {
+    paste0(round(mins / (24 * 60), 1), "d")
+  }
 }
 
-ggplot(flow_data, aes(x = segment_label, y = minutes, fill = kategori_label)) +
- geom_col(position = "dodge", width = 0.7) +
- geom_text(
-   aes(label = sapply(minutes, format_time)),
-   position = position_dodge(width = 0.7),
-   vjust = -0.5,
-   size = 3
- ) +
- scale_fill_brewer(palette = "Set2", name = "Category") +
- scale_y_continuous(
-   labels = function(x) sapply(x, format_time),
-   expand = expansion(mult = c(0, 0.15))
- ) +
- labs(
-   x = "TAT Segment",
-   y = "Median Time",
-   title = "Process Flow: Median TAT by Segment",
-   subtitle = "Requisition → Received → Released → Acknowledged"
- ) +
- theme(legend.position = "bottom")
+# Calculate percentiles for all segments by category
+calc_flow_percentiles <- function(data, probs = c(0.5, 0.8, 0.9, 0.95, 0.99)) {
+  data |>
+    filter(!is.na(kvitteret)) |>
+    group_by(kategori_label) |>
+    summarise(
+      across(
+        c(seg1_prelab, seg2_inlab, seg3_postlab),
+        list(
+          p50 = ~quantile(.x, 0.50, na.rm = TRUE),
+          p80 = ~quantile(.x, 0.80, na.rm = TRUE),
+          p90 = ~quantile(.x, 0.90, na.rm = TRUE),
+          p95 = ~quantile(.x, 0.95, na.rm = TRUE),
+          p99 = ~quantile(.x, 0.99, na.rm = TRUE)
+        )
+      ),
+      .groups = "drop"
+    )
+}
+
+flow_percentiles <- calc_flow_percentiles(tat_analysis)
+
+# Create process flow text for a single row
+make_flow_text <- function(seg1, seg2, seg3) {
+  paste0(
+    "Req ──", format_time(seg1), "──▶ ",
+    "Rec ──", format_time(seg2), "──▶ ",
+    "Rel ──", format_time(seg3), "──▶ Ack"
+  )
+}
+```
+
+```{r}
+#| label: fig-process-flow-arrows
+#| fig-cap: "TAT Process Flow by Percentile"
+#| fig-height: 8
+#| fig-width: 12
+
+# Reshape data for plotting
+flow_long <- flow_percentiles |>
+  pivot_longer(
+    cols = -kategori_label,
+    names_to = c("segment", "percentile"),
+    names_pattern = "(.+)_(p\\d+)",
+    values_to = "minutes"
+  ) |>
+  pivot_wider(
+    names_from = segment,
+    values_from = minutes
+  ) |>
+  mutate(
+    percentile = factor(
+      percentile,
+      levels = c("p50", "p80", "p90", "p95", "p99"),
+      labels = c("P50", "P80", "P90", "P95", "P99")
+    ),
+    flow_text = pmap_chr(
+      list(seg1_prelab, seg2_inlab, seg3_postlab),
+      make_flow_text
+    )
+  )
+
+# Create the arrow-based visualization
+ggplot(flow_long, aes(y = percentile)) +
+  # Segment 1: Req -> Rec
+  geom_segment(
+    aes(x = 0, xend = seg1_prelab, yend = percentile),
+    arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+    linewidth = 1, color = "#66c2a5"
+  ) +
+  geom_text(
+    aes(x = seg1_prelab / 2, label = sapply(seg1_prelab, format_time)),
+    vjust = -0.5, size = 3, color = "#66c2a5", fontface = "bold"
+  ) +
+  # Segment 2: Rec -> Rel
+  geom_segment(
+    aes(x = seg1_prelab, xend = seg1_prelab + seg2_inlab, yend = percentile),
+    arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+    linewidth = 1, color = "#fc8d62"
+  ) +
+  geom_text(
+    aes(x = seg1_prelab + seg2_inlab / 2, label = sapply(seg2_inlab, format_time)),
+    vjust = -0.5, size = 3, color = "#fc8d62", fontface = "bold"
+  ) +
+  # Segment 3: Rel -> Ack
+  geom_segment(
+    aes(x = seg1_prelab + seg2_inlab, xend = seg1_prelab + seg2_inlab + seg3_postlab, yend = percentile),
+    arrow = arrow(length = unit(0.15, "cm"), type = "closed"),
+    linewidth = 1, color = "#8da0cb"
+  ) +
+  geom_text(
+    aes(x = seg1_prelab + seg2_inlab + seg3_postlab / 2, label = sapply(seg3_postlab, format_time)),
+    vjust = -0.5, size = 3, color = "#8da0cb", fontface = "bold"
+  ) +
+  # Node labels
+  geom_point(aes(x = 0), size = 3, color = "black") +
+  geom_point(aes(x = seg1_prelab), size = 3, color = "black") +
+  geom_point(aes(x = seg1_prelab + seg2_inlab), size = 3, color = "black") +
+  geom_point(aes(x = seg1_prelab + seg2_inlab + seg3_postlab), size = 3, color = "black") +
+  # Facet by category
+  facet_wrap(~kategori_label, ncol = 1, scales = "free_x") +
+  scale_x_continuous(
+    labels = function(x) sapply(x, format_time),
+    expand = expansion(mult = c(0.02, 0.05))
+  ) +
+  scale_y_discrete(limits = rev) +
+  labs(
+    x = "Cumulative Time",
+    y = "Percentile",
+    title = "TAT Process Flow by Category and Percentile",
+    subtitle = "Req ──Pre-lab──▶ Rec ──In-lab──▶ Rel ──Post-lab──▶ Ack",
+    caption = "Green: Pre-lab | Orange: In-lab | Blue: Post-lab"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    strip.text = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(family = "mono")
+  )
+```
+
+### Text Summary
+
+```{r}
+#| label: flow-text-summary
+#| results: asis
+
+for (cat in unique(flow_long$kategori_label)) {
+  cat("\n\n**", cat, "**\n\n", sep = "")
+  cat("```\n")
+  cat_data <- flow_long |> filter(kategori_label == cat)
+  for (i in seq_len(nrow(cat_data))) {
+    cat(cat_data$percentile[i], " ", cat_data$flow_text[i], "\n", sep = "")
+  }
+  cat("```\n")
+}
 ```
 
 ## Percentile Distribution: In-Lab TAT (Segment 2)
@@ -206,7 +301,7 @@ ggplot(percentile_long, aes(x = Percentile, y = minutes, color = Category, group
 
 ## All Segments: Percentile Tables
 
-::: {.panel-tabsettat-re}
+::: {.panel-tabset}
 
 ### Pre-lab (Segment 1)
 ```{r}
