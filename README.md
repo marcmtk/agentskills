@@ -6,7 +6,7 @@ A comprehensive framework for designing, building, and governing Business Intell
 
 This repository contains:
 
-- **9 Production-Ready Dashboards** - Complete lab analytics reports covering quality, operations, finance, and strategy
+- **10 Production-Ready Dashboards** - Complete lab analytics reports covering quality, operations, finance, and strategy
 - **Strategic Planning Framework** - Structured workflows for BI portfolio design and governance
 - **Data Sensitivity Architecture** - 6-layer model enabling AI-assisted development while protecting patient data
 - **Modern R Development Skills** - Tidyverse style guides and patterns for R 4.3+
@@ -33,7 +33,7 @@ make all
 
 ```
 agentskills/
-├── reports/                    # 9 complete lab analytics dashboards
+├── reports/                    # 10 complete lab analytics dashboards
 │   ├── activity-volume/        # Test volume with YoY comparison
 │   ├── quality-scorecard/      # Pre/analytical/post-analytical quality
 │   ├── qc-trending/            # Levey-Jennings QC charts
@@ -42,7 +42,8 @@ agentskills/
 │   ├── cost-analysis/          # Cost per test analysis
 │   ├── utilization/            # Test ordering patterns
 │   ├── antibiogram/            # Antimicrobial susceptibility
-│   └── executive-scorecard/    # Executive KPI dashboard
+│   ├── executive-scorecard/    # Executive KPI dashboard
+│   └── tat/                    # Turnaround time analysis
 │
 ├── lab-intelligence-planning/  # Strategic BI planning skill
 │   ├── SKILL.md                # Skill definition
@@ -51,8 +52,6 @@ agentskills/
 │
 ├── skills/                     # Development skills
 │   └── writing-tidyverse-r/    # Modern R/tidyverse patterns
-│
-├── tat-report/                 # Original proof-of-concept
 │
 ├── data-sensitivity-framework.md  # 6-layer data architecture
 ├── CLAUDE.md                      # AI assistant guidance
@@ -73,6 +72,7 @@ agentskills/
 | Utilization | Strategic | Medical Director, Dept Heads | Monthly |
 | Antibiogram | Clinical | Microbiologists, Infection Prevention | Quarterly |
 | Executive Scorecard | Strategic | Hospital Executives, Lab Director | Monthly |
+| TAT | Operational | Lab Director, Section Heads | Daily |
 
 ## Data Sensitivity Framework
 

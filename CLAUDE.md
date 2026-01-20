@@ -6,8 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a clinical laboratory intelligence and analytics framework ("agentskills") containing:
 - **lab-intelligence-planning/** - A skill framework for designing, building, and governing BI products for clinical laboratories
-- **reports/** - Complete suite of 9 lab intelligence dashboards (see Reports Suite below)
-- **tat-report/** - Original TAT analysis example
+- **reports/** - Complete suite of 10 lab intelligence dashboards (see Reports Suite below)
 - **skills/** - Local Claude Code skills for R development
 - **data-sensitivity-framework.md** - Operating model for AI-assisted development while protecting patient data
 
@@ -26,6 +25,7 @@ The `reports/` directory contains a comprehensive suite of lab intelligence dash
 | **utilization** | Ordering patterns, duplicate detection | Medical Director, Dept Heads | Monthly |
 | **antibiogram** | Antimicrobial susceptibility matrix | Microbiologists, Infection Prevention | Quarterly |
 | **executive-scorecard** | KPI summary for leadership | Hospital Executives, Lab Director | Monthly |
+| **tat** | Turnaround time analysis | Lab Director, Section Heads | Daily |
 
 ## Commands
 
@@ -50,8 +50,8 @@ cd reports && Rscript generate_all_data.R
 # Render a specific report
 quarto render reports/activity-volume/activity-volume-report.qmd
 
-# Render TAT report (original example)
-quarto render tat-report/tat-report.qmd
+# Render TAT report
+quarto render reports/tat/tat-report.qmd
 
 # Run tests
 Rscript tests/testthat.R
@@ -98,7 +98,7 @@ Key reference materials:
 
 ### TAT Report Implementation
 
-The `tat-report/` directory demonstrates the framework with a Turnaround Time analysis:
+The `reports/tat/` directory contains the Turnaround Time analysis report:
 - `generate_data.R` - Creates synthetic mock data with realistic distributions
 - `tat-report.qmd` - Quarto markdown report with R analysis
 - Uses: dplyr, tidyr, ggplot2, lubridate, scales, gt, purrr

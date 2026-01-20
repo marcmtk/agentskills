@@ -18,12 +18,11 @@ QUARTO := quarto
 
 # Directories
 REPORTS_DIR := reports
-TAT_DIR := tat-report
 TESTS_DIR := tests
 
 # Report subdirectories
 REPORT_DIRS := activity-volume quality-scorecard qc-trending critical-values \
-               incidents cost-analysis utilization antibiogram executive-scorecard
+               incidents cost-analysis utilization antibiogram executive-scorecard tat
 
 # -----------------------------------------------------------------------------
 # Default target
@@ -109,9 +108,9 @@ report-antibiogram: ## Render antibiogram report
 report-executive: ## Render executive scorecard report
 	$(QUARTO) render $(REPORTS_DIR)/executive-scorecard/executive-scorecard-report.qmd
 
-report-tat: ## Render TAT report (proof-of-concept)
-	cd $(TAT_DIR) && $(R) generate_data.R
-	$(QUARTO) render $(TAT_DIR)/tat-report.qmd
+report-tat: ## Render TAT report
+	cd $(REPORTS_DIR)/tat && $(R) generate_data.R
+	$(QUARTO) render $(REPORTS_DIR)/tat/tat-report.qmd
 
 # -----------------------------------------------------------------------------
 # Testing
@@ -203,14 +202,13 @@ clean: ## Remove generated files
 	@echo "Cleaning generated files..."
 	# Remove rendered HTML
 	find $(REPORTS_DIR) -name "*.html" -type f -delete
-	find $(TAT_DIR) -name "*.html" -type f -delete 2>/dev/null || true
 	# Remove Quarto artifacts
 	find . -name "*_files" -type d -exec rm -rf {} + 2>/dev/null || true
 	find . -name "*_cache" -type d -exec rm -rf {} + 2>/dev/null || true
 	find . -name ".quarto" -type d -exec rm -rf {} + 2>/dev/null || true
 	# Remove generated data
 	find $(REPORTS_DIR) -path "*/data/*.rds" -type f -delete
-	rm -f $(TAT_DIR)/*.rds $(TAT_DIR)/*.csv 2>/dev/null || true
+	rm -f $(REPORTS_DIR)/tat/*.rds $(REPORTS_DIR)/tat/*.csv 2>/dev/null || true
 	# Remove R artifacts
 	find . -name ".Rhistory" -type f -delete
 	find . -name ".RData" -type f -delete
@@ -218,11 +216,10 @@ clean: ## Remove generated files
 
 clean-data: ## Remove only generated data files
 	find $(REPORTS_DIR) -path "*/data/*.rds" -type f -delete
-	rm -f $(TAT_DIR)/*.rds $(TAT_DIR)/*.csv 2>/dev/null || true
+	rm -f $(REPORTS_DIR)/tat/*.rds $(REPORTS_DIR)/tat/*.csv 2>/dev/null || true
 
 clean-reports: ## Remove only rendered reports
 	find $(REPORTS_DIR) -name "*.html" -type f -delete
-	find $(TAT_DIR) -name "*.html" -type f -delete 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
 # Validation
