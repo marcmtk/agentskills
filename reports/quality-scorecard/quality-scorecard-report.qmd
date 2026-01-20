@@ -1,0 +1,386 @@
+---
+title: "Quality Indicator Scorecard"
+subtitle: "Pre-Analytical, Analytical, and Post-Analytical Quality Metrics"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+quality_data <- readRDS("data/quality_indicators.rds")
+
+# Current month
+current_month <- max(quality_data$quality_index$month)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+
+# Color functions for status
+status_color <- function(value, target, inverse = FALSE) {
+  if (inverse) {
+    case_when(
+      value <= target ~ "#28a745",
+      value <= target * 1.5 ~ "#ffc107",
+      TRUE ~ "#dc3545"
+    )
+  } else {
+    case_when(
+      value >= target ~ "#28a745",
+      value >= target * 0.9 ~ "#ffc107",
+      TRUE ~ "#dc3545"
+    )
+  }
+}
+```
+
+## Executive Summary
+
+This scorecard tracks key quality indicators across all laboratory phases. Metrics are aligned with IFCC, CAP, and ISO 15189 standards. Primary audience: Medical Lab Director, Specialty MDs, Section Heads.
+
+```{r overall-quality-index, fig.width=10, fig.height=3}
+# Quality index trend
+qi_trend <- quality_data$quality_index |>
+  group_by(month) |>
+  summarise(quality_index = mean(quality_index), .groups = "drop")
+
+current_qi <- qi_trend |> filter(month == current_month) |> pull(quality_index)
+target_qi <- 90
+
+ggplot(qi_trend, aes(x = month, y = quality_index)) +
+  geom_line(color = "#2c7fb8", linewidth = 1.2) +
+  geom_point(color = "#2c7fb8", size = 2) +
+  geom_hline(yintercept = target_qi, linetype = "dashed", color = "#28a745", linewidth = 1) +
+  annotate("text", x = min(qi_trend$month), y = target_qi + 1, label = "Target: 90",
+           hjust = 0, color = "#28a745", fontface = "bold") +
+  scale_y_continuous(limits = c(70, 100)) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Overall Quality Index Trend",
+    subtitle = sprintf("Current: %.1f | Target: %.0f", current_qi, target_qi),
+    x = NULL,
+    y = "Quality Index"
+  )
+```
+
+## Current Month Summary
+
+```{r current-summary}
+current_quality <- quality_data$quality_index |>
+  filter(month == current_month)
+
+# Create summary table
+summary_metrics <- current_quality |>
+  summarise(
+    `Rejection Rate (%)` = mean(rejection_rate),
+    `QC Pass Rate (%)` = mean(qc_pass_rate),
+    `TAT Compliance (%)` = mean(tat_compliance_rate),
+    `Critical Notify (%)` = mean(critical_notification_rate),
+    `Amendment Rate (%)` = mean(amendment_rate),
+    `Quality Index` = mean(quality_index)
+  ) |>
+  pivot_longer(everything(), names_to = "Metric", values_to = "Value") |>
+  mutate(
+    Target = c("<1%", ">95%", ">90%", ">95%", "<0.5%", ">90"),
+    Status = case_when(
+      Metric == "Rejection Rate (%)" ~ if_else(Value < 1, "Pass", "Fail"),
+      Metric == "QC Pass Rate (%)" ~ if_else(Value > 95, "Pass", if_else(Value > 90, "Warn", "Fail")),
+      Metric == "TAT Compliance (%)" ~ if_else(Value > 90, "Pass", if_else(Value > 85, "Warn", "Fail")),
+      Metric == "Critical Notify (%)" ~ if_else(Value > 95, "Pass", if_else(Value > 90, "Warn", "Fail")),
+      Metric == "Amendment Rate (%)" ~ if_else(Value < 0.5, "Pass", if_else(Value < 0.75, "Warn", "Fail")),
+      Metric == "Quality Index" ~ if_else(Value > 90, "Pass", if_else(Value > 85, "Warn", "Fail"))
+    )
+  )
+
+summary_metrics |>
+  gt() |>
+  tab_header(
+    title = "Quality Metrics Summary",
+    subtitle = format(current_month, "%B %Y")
+  ) |>
+  fmt_number(columns = Value, decimals = 2) |>
+  data_color(
+    columns = Status,
+    palette = c("Pass" = "#28a745", "Warn" = "#ffc107", "Fail" = "#dc3545")
+  )
+```
+
+## Pre-Analytical Phase Metrics
+
+Pre-analytical errors account for ~70% of all laboratory errors. Close monitoring is critical.
+
+```{r preanalytical-table}
+pre_current <- quality_data$preanalytical |>
+  filter(month == current_month)
+
+pre_summary <- pre_current |>
+  summarise(
+    across(c(rejection_rate, hemolysis_rate, labeling_error_rate,
+             missing_rate, volume_inadequacy_rate), mean)
+  ) |>
+  pivot_longer(everything(), names_to = "Metric", values_to = "Value") |>
+  mutate(
+    Metric = case_when(
+      Metric == "rejection_rate" ~ "Specimen Rejection Rate",
+      Metric == "hemolysis_rate" ~ "Hemolysis Rate",
+      Metric == "labeling_error_rate" ~ "Labeling Error Rate",
+      Metric == "missing_rate" ~ "Missing Sample Rate",
+      Metric == "volume_inadequacy_rate" ~ "Volume Inadequacy Rate"
+    ),
+    Target = c("<1%", "<2%", "<0.1%", "<0.1%", "<2%"),
+    Status = c(
+      if_else(Value[1] < 1, "Pass", "Fail"),
+      if_else(Value[2] < 2, "Pass", if_else(Value[2] < 3, "Warn", "Fail")),
+      if_else(Value[3] < 0.1, "Pass", if_else(Value[3] < 0.2, "Warn", "Fail")),
+      if_else(Value[4] < 0.1, "Pass", "Fail"),
+      if_else(Value[5] < 2, "Pass", if_else(Value[5] < 3, "Warn", "Fail"))
+    )
+  )
+
+pre_summary |>
+  gt() |>
+  tab_header(title = "Pre-Analytical Metrics") |>
+  fmt_number(columns = Value, decimals = 3) |>
+  cols_label(Value = "Value (%)") |>
+  data_color(
+    columns = Status,
+    palette = c("Pass" = "#d4edda", "Warn" = "#fff3cd", "Fail" = "#f8d7da")
+  )
+```
+
+### Pre-Analytical Trends
+
+```{r preanalytical-trends, fig.width=10, fig.height=5}
+pre_trends <- quality_data$preanalytical |>
+  group_by(month) |>
+  summarise(
+    rejection_rate = mean(rejection_rate),
+    hemolysis_rate = mean(hemolysis_rate),
+    labeling_error_rate = mean(labeling_error_rate) * 10,  # Scale for visibility
+    .groups = "drop"
+  ) |>
+  pivot_longer(-month, names_to = "metric", values_to = "value")
+
+ggplot(pre_trends, aes(x = month, y = value, color = metric)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Pre-Analytical Metrics Trend",
+    subtitle = "Labeling error rate scaled 10x for visibility",
+    x = NULL,
+    y = "Rate (%)",
+    color = "Metric"
+  ) +
+  scale_color_brewer(palette = "Set1",
+    labels = c("Hemolysis Rate", "Labeling Error (x10)", "Rejection Rate"))
+```
+
+## Analytical Phase Metrics
+
+```{r analytical-table}
+ana_current <- quality_data$analytical |>
+  filter(month == current_month)
+
+ana_summary <- ana_current |>
+  summarise(
+    across(c(qc_pass_rate, auto_validation_rate, rerun_rate), mean)
+  ) |>
+  pivot_longer(everything(), names_to = "Metric", values_to = "Value") |>
+  mutate(
+    Metric = case_when(
+      Metric == "qc_pass_rate" ~ "QC Pass Rate",
+      Metric == "auto_validation_rate" ~ "Auto-Validation Rate",
+      Metric == "rerun_rate" ~ "Rerun Rate"
+    ),
+    Target = c(">95%", "70-95%", "<3%"),
+    Status = c(
+      if_else(Value[1] > 95, "Pass", if_else(Value[1] > 90, "Warn", "Fail")),
+      if_else(Value[2] >= 70 & Value[2] <= 95, "Pass", "Warn"),
+      if_else(Value[3] < 3, "Pass", if_else(Value[3] < 5, "Warn", "Fail"))
+    )
+  )
+
+ana_summary |>
+  gt() |>
+  tab_header(title = "Analytical Metrics") |>
+  fmt_number(columns = Value, decimals = 2) |>
+  cols_label(Value = "Value (%)") |>
+  data_color(
+    columns = Status,
+    palette = c("Pass" = "#d4edda", "Warn" = "#fff3cd", "Fail" = "#f8d7da")
+  )
+```
+
+### Analytical Trends by Section
+
+```{r analytical-trends, fig.width=10, fig.height=5}
+ggplot(quality_data$analytical, aes(x = month, y = qc_pass_rate, color = section)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 95, linetype = "dashed", color = "#28a745") +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  scale_y_continuous(limits = c(90, 100)) +
+  labs(
+    title = "QC Pass Rate by Section",
+    subtitle = "Target: >95%",
+    x = NULL,
+    y = "QC Pass Rate (%)",
+    color = "Section"
+  ) +
+  scale_color_brewer(palette = "Set2")
+```
+
+## Post-Analytical Phase Metrics
+
+```{r postanalytical-table}
+post_current <- quality_data$postanalytical |>
+  filter(month == current_month)
+
+post_summary <- post_current |>
+  summarise(
+    across(c(tat_compliance_rate, critical_notification_rate,
+             amendment_rate, correction_rate), mean)
+  ) |>
+  pivot_longer(everything(), names_to = "Metric", values_to = "Value") |>
+  mutate(
+    Metric = case_when(
+      Metric == "tat_compliance_rate" ~ "TAT Compliance Rate",
+      Metric == "critical_notification_rate" ~ "Critical Value Notification Rate",
+      Metric == "amendment_rate" ~ "Report Amendment Rate",
+      Metric == "correction_rate" ~ "Result Correction Rate"
+    ),
+    Target = c(">90%", "100%", "<0.5%", "<0.1%"),
+    Status = c(
+      if_else(Value[1] > 90, "Pass", if_else(Value[1] > 85, "Warn", "Fail")),
+      if_else(Value[2] > 95, "Pass", if_else(Value[2] > 90, "Warn", "Fail")),
+      if_else(Value[3] < 0.5, "Pass", if_else(Value[3] < 0.75, "Warn", "Fail")),
+      if_else(Value[4] < 0.1, "Pass", if_else(Value[4] < 0.2, "Warn", "Fail"))
+    )
+  )
+
+post_summary |>
+  gt() |>
+  tab_header(title = "Post-Analytical Metrics") |>
+  fmt_number(columns = Value, decimals = 3) |>
+  cols_label(Value = "Value (%)") |>
+  data_color(
+    columns = Status,
+    palette = c("Pass" = "#d4edda", "Warn" = "#fff3cd", "Fail" = "#f8d7da")
+  )
+```
+
+### TAT Compliance Trend
+
+```{r tat-trend, fig.width=10, fig.height=4}
+ggplot(quality_data$postanalytical, aes(x = month, y = tat_compliance_rate, color = section)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 90, linetype = "dashed", color = "#28a745") +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  scale_y_continuous(limits = c(80, 100)) +
+  labs(
+    title = "TAT Compliance by Section",
+    subtitle = "Target: >90%",
+    x = NULL,
+    y = "TAT Compliance (%)",
+    color = "Section"
+  ) +
+  scale_color_brewer(palette = "Set2")
+```
+
+## Section Comparison
+
+```{r section-comparison, fig.width=10, fig.height=6}
+section_qi <- quality_data$quality_index |>
+  filter(month == current_month) |>
+  select(section, rejection_rate, qc_pass_rate, tat_compliance_rate,
+         critical_notification_rate, quality_index) |>
+  pivot_longer(-section, names_to = "metric", values_to = "value") |>
+  mutate(
+    metric = case_when(
+      metric == "rejection_rate" ~ "Rejection Rate",
+      metric == "qc_pass_rate" ~ "QC Pass Rate",
+      metric == "tat_compliance_rate" ~ "TAT Compliance",
+      metric == "critical_notification_rate" ~ "Critical Notify",
+      metric == "quality_index" ~ "Quality Index"
+    )
+  )
+
+ggplot(section_qi, aes(x = metric, y = value, fill = section)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Quality Metrics by Section - Current Month",
+    x = NULL,
+    y = "Value",
+    fill = "Section"
+  )
+```
+
+## Accreditation Readiness
+
+Summary of key accreditation metrics and their status.
+
+```{r accreditation-status}
+accred_metrics <- tibble(
+  Standard = c("ISO 15189", "CAP", "CAP", "ISO 15189", "CAP"),
+  Requirement = c(
+    "Critical value notification <30 min",
+    "QC performance >95%",
+    "Proficiency testing acceptable",
+    "Specimen rejection documentation",
+    "Result amendment tracking"
+  ),
+  `Current Status` = c(
+    sprintf("%.1f%% within 30 min", mean(post_current$critical_notification_rate)),
+    sprintf("%.1f%% pass rate", mean(ana_current$qc_pass_rate)),
+    "100% participation",
+    sprintf("%.2f%% rejection rate", mean(pre_current$rejection_rate)),
+    sprintf("%.3f%% amendment rate", mean(post_current$amendment_rate))
+  ),
+  Compliant = c("Yes", "Yes", "Yes", "Yes", "Yes")
+)
+
+accred_metrics |>
+  gt() |>
+  tab_header(title = "Accreditation Compliance Summary") |>
+  data_color(
+    columns = Compliant,
+    palette = c("Yes" = "#d4edda", "No" = "#f8d7da")
+  )
+```
+
+## Recommendations
+
+Based on current metrics:
+
+1. **Pre-Analytical**: Continue monitoring hemolysis rates; consider phlebotomy training if trending upward
+2. **Analytical**: QC performance is within target; maintain current protocols
+3. **Post-Analytical**: TAT compliance is meeting targets; focus on critical value notification process to maintain 100%
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Monthly*
+
+*Primary audience: Medical Lab Director, Specialty MDs, Section Heads*

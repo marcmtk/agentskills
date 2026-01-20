@@ -1,0 +1,395 @@
+---
+title: "Laboratory Executive Scorecard"
+subtitle: "Strategic Performance Metrics for Leadership"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+scorecard_data <- readRDS("data/executive_scorecard.rds")
+
+# Current month
+current_month <- max(scorecard_data$monthly$month)
+current <- scorecard_data$monthly |> filter(month == current_month)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+## Performance At-A-Glance
+
+```{r kpi-summary, fig.width=10, fig.height=6}
+# Create KPI cards data
+kpis <- tibble(
+  metric = c("Quality Index", "TAT Compliance", "Critical Value\nNotification",
+             "Cost per Test", "Productivity\n(Tests/FTE)"),
+  value = c(current$quality_index, current$tat_compliance, current$critical_compliance,
+            current$cost_per_test, current$tests_per_fte),
+  target = c(current$quality_target, current$tat_target, current$critical_target,
+             current$cost_target, current$productivity_target),
+  status = c(current$quality_status, current$tat_status, current$critical_status,
+             current$cost_status, current$productivity_status),
+  format = c("pct", "pct", "pct", "dollar", "number")
+)
+
+# Create visual summary
+kpi_display <- kpis |>
+  mutate(
+    display_value = case_when(
+      format == "pct" ~ sprintf("%.1f%%", value),
+      format == "dollar" ~ sprintf("$%.2f", value),
+      TRUE ~ sprintf("%.0f", value)
+    ),
+    display_target = case_when(
+      format == "pct" ~ sprintf("%.0f%%", target),
+      format == "dollar" ~ sprintf("$%.2f", target),
+      TRUE ~ sprintf("%.0f", target)
+    )
+  )
+
+kpi_display |>
+  select(metric, display_value, display_target, status) |>
+  gt() |>
+  tab_header(
+    title = "Key Performance Indicators",
+    subtitle = format(current_month, "%B %Y")
+  ) |>
+  cols_label(
+    metric = "Metric",
+    display_value = "Current",
+    display_target = "Target",
+    status = "Status"
+  ) |>
+  data_color(
+    columns = status,
+    palette = c("Green" = "#28a745", "Yellow" = "#ffc107", "Red" = "#dc3545")
+  ) |>
+  tab_style(
+    style = cell_text(size = px(16), weight = "bold"),
+    locations = cells_body(columns = display_value)
+  )
+```
+
+## Overall Score Trend
+
+```{r overall-trend, fig.width=10, fig.height=4}
+ggplot(scorecard_data$monthly, aes(x = month, y = overall_score)) +
+  geom_line(color = "#2c7fb8", linewidth = 1.5) +
+  geom_point(color = "#2c7fb8", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "#28a745") +
+  scale_y_continuous(limits = c(70, 100)) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Overall Laboratory Performance Score",
+    subtitle = sprintf("Current: %.1f | Trend: %s",
+                       current$overall_score,
+                       if_else(coef(lm(overall_score ~ as.numeric(month),
+                                       data = scorecard_data$monthly))[2] > 0,
+                               "Improving", "Declining")),
+    x = NULL,
+    y = "Score"
+  )
+```
+
+## Quality Performance
+
+```{r quality-performance, fig.width=10, fig.height=4}
+ggplot(scorecard_data$monthly, aes(x = month)) +
+  geom_line(aes(y = quality_index, color = "Quality Index"), linewidth = 1) +
+  geom_point(aes(y = quality_index, color = "Quality Index"), size = 2) +
+  geom_hline(aes(yintercept = quality_target, color = "Target"),
+             linetype = "dashed", linewidth = 1) +
+  scale_y_continuous(limits = c(70, 100)) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  scale_color_manual(values = c("Quality Index" = "#2c7fb8", "Target" = "#28a745")) +
+  labs(
+    title = "Quality Index Trend",
+    subtitle = sprintf("Current: %.1f%% | Target: %.0f%%",
+                       current$quality_index, current$quality_target),
+    x = NULL,
+    y = "Quality Index",
+    color = NULL
+  ) +
+  theme(legend.position = "bottom")
+```
+
+## Operational Performance
+
+### Turnaround Time
+
+```{r tat-performance, fig.width=10, fig.height=4}
+ggplot(scorecard_data$monthly, aes(x = month)) +
+  geom_ribbon(aes(ymin = tat_target - 5, ymax = tat_target),
+              fill = "#ffc107", alpha = 0.3) +
+  geom_ribbon(aes(ymin = tat_target, ymax = 100),
+              fill = "#28a745", alpha = 0.3) +
+  geom_line(aes(y = tat_compliance), color = "#2c7fb8", linewidth = 1.2) +
+  geom_point(aes(y = tat_compliance), color = "#2c7fb8", size = 2) +
+  geom_hline(yintercept = current$tat_target, linetype = "dashed", color = "#28a745") +
+  scale_y_continuous(limits = c(75, 100)) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "TAT Compliance Rate",
+    subtitle = sprintf("Current: %.1f%% | Target: >%.0f%%",
+                       current$tat_compliance, current$tat_target),
+    x = NULL,
+    y = "Compliance (%)"
+  )
+```
+
+### Critical Value Notification
+
+```{r critical-performance, fig.width=10, fig.height=4}
+ggplot(scorecard_data$monthly, aes(x = month)) +
+  geom_line(aes(y = critical_compliance), color = "#31a354", linewidth = 1.2) +
+  geom_point(aes(y = critical_compliance), color = "#31a354", size = 2) +
+  geom_hline(yintercept = current$critical_target, linetype = "dashed", color = "#dc3545") +
+  annotate("text", x = min(scorecard_data$monthly$month), y = current$critical_target - 1,
+           label = "Target: 95%", hjust = 0, color = "#dc3545") +
+  scale_y_continuous(limits = c(85, 100)) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Critical Value Notification Compliance",
+    subtitle = sprintf("Current: %.1f%% | Target: >%.0f%%",
+                       current$critical_compliance, current$critical_target),
+    x = NULL,
+    y = "Compliance (%)"
+  )
+```
+
+## Financial Performance
+
+### Cost per Test
+
+```{r cost-performance, fig.width=10, fig.height=4}
+ggplot(scorecard_data$monthly, aes(x = month)) +
+  geom_ribbon(aes(ymin = 0, ymax = cost_target), fill = "#28a745", alpha = 0.2) +
+  geom_ribbon(aes(ymin = cost_target, ymax = cost_target * 1.1),
+              fill = "#ffc107", alpha = 0.2) +
+  geom_ribbon(aes(ymin = cost_target * 1.1, ymax = 20),
+              fill = "#dc3545", alpha = 0.2) +
+  geom_line(aes(y = cost_per_test), color = "#2c7fb8", linewidth = 1.2) +
+  geom_point(aes(y = cost_per_test), color = "#2c7fb8", size = 2) +
+  geom_hline(yintercept = current$cost_target, linetype = "dashed") +
+  scale_y_continuous(labels = dollar, limits = c(10, 20)) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Cost per Test",
+    subtitle = sprintf("Current: $%.2f | Target: <$%.2f",
+                       current$cost_per_test, current$cost_target),
+    x = NULL,
+    y = "Cost per Test"
+  )
+```
+
+### Volume Trend
+
+```{r volume-performance, fig.width=10, fig.height=4}
+volume_trend <- scorecard_data$monthly |>
+  mutate(
+    yoy_change = volume_yoy_change
+  )
+
+ggplot(volume_trend, aes(x = month, y = test_volume)) +
+  geom_col(fill = "#2c7fb8", alpha = 0.7) +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Monthly Test Volume",
+    subtitle = sprintf("Current: %s tests | YoY Change: %s",
+                       comma(current$test_volume),
+                       if_else(is.na(current$volume_yoy_change), "N/A",
+                               sprintf("%+.1f%%", current$volume_yoy_change))),
+    x = NULL,
+    y = "Test Volume"
+  )
+```
+
+## Productivity
+
+```{r productivity-performance, fig.width=10, fig.height=4}
+ggplot(scorecard_data$monthly, aes(x = month)) +
+  geom_line(aes(y = tests_per_fte), color = "#756bb1", linewidth = 1.2) +
+  geom_point(aes(y = tests_per_fte), color = "#756bb1", size = 2) +
+  geom_hline(yintercept = current$productivity_target, linetype = "dashed", color = "#28a745") +
+  scale_y_continuous(limits = c(140, 220)) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Productivity (Tests per FTE)",
+    subtitle = sprintf("Current: %.0f | Target: >%.0f",
+                       current$tests_per_fte, current$productivity_target),
+    x = NULL,
+    y = "Tests per FTE"
+  )
+```
+
+## Status Summary
+
+```{r status-summary, fig.width=8, fig.height=4}
+status_counts <- scorecard_data$monthly |>
+  filter(month == current_month) |>
+  select(ends_with("_status")) |>
+  pivot_longer(everything(), names_to = "metric", values_to = "status") |>
+  count(status)
+
+ggplot(status_counts, aes(x = status, y = n, fill = status)) +
+  geom_col() +
+  geom_text(aes(label = n), vjust = -0.5, size = 6, fontface = "bold") +
+  scale_fill_manual(values = c("Green" = "#28a745", "Yellow" = "#ffc107", "Red" = "#dc3545")) +
+  labs(
+    title = "KPI Status Distribution",
+    x = NULL,
+    y = "Count"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Historical Performance
+
+```{r historical-table}
+scorecard_data$monthly |>
+  arrange(desc(month)) |>
+  head(6) |>
+  mutate(
+    month_display = format(month, "%b %Y")
+  ) |>
+  select(month_display, quality_index, tat_compliance, critical_compliance,
+         cost_per_test, tests_per_fte, overall_score) |>
+  gt() |>
+  tab_header(title = "Last 6 Months Performance") |>
+  fmt_number(columns = c(quality_index, tat_compliance, critical_compliance,
+                         overall_score), decimals = 1) |>
+  fmt_currency(columns = cost_per_test) |>
+  fmt_number(columns = tests_per_fte, decimals = 0) |>
+  cols_label(
+    month_display = "Month",
+    quality_index = "Quality",
+    tat_compliance = "TAT %",
+    critical_compliance = "Critical %",
+    cost_per_test = "Cost/Test",
+    tests_per_fte = "Tests/FTE",
+    overall_score = "Overall"
+  ) |>
+  data_color(
+    columns = overall_score,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(70, 85, 100)
+  )
+```
+
+## Strategic Initiatives Status
+
+```{r initiatives}
+# Example strategic initiatives (in production, would come from project tracking)
+initiatives <- tibble(
+  Initiative = c(
+    "Implement automated specimen tracking",
+    "Reduce pre-analytical errors by 25%",
+    "Deploy real-time TAT dashboard",
+    "Expand molecular testing menu",
+    "Achieve ISO 15189 re-accreditation"
+  ),
+  Status = c("In Progress", "Completed", "In Progress", "Planning", "On Track"),
+  `Target Date` = c("Q2 2025", "Q4 2024", "Q1 2025", "Q3 2025", "Q4 2025"),
+  Progress = c(65, 100, 40, 15, 80)
+)
+
+initiatives |>
+  gt() |>
+  tab_header(title = "Strategic Initiatives") |>
+  fmt_number(columns = Progress, decimals = 0, pattern = "{x}%") |>
+  data_color(
+    columns = Status,
+    palette = c(
+      "Completed" = "#28a745",
+      "On Track" = "#28a745",
+      "In Progress" = "#ffc107",
+      "Planning" = "#17a2b8",
+      "At Risk" = "#dc3545"
+    )
+  )
+```
+
+## Key Insights
+
+```{r insights}
+# Generate automated insights
+insights <- c()
+
+# Quality insight
+if (current$quality_status == "Green") {
+  insights <- c(insights, "Quality Index is meeting target - maintain current processes")
+} else if (current$quality_status == "Yellow") {
+  insights <- c(insights, "Quality Index is approaching target threshold - monitor closely")
+} else {
+  insights <- c(insights, "Quality Index below target - immediate attention required")
+}
+
+# TAT insight
+if (current$tat_compliance > 90) {
+  insights <- c(insights, "TAT compliance is strong across all sections")
+} else {
+  insights <- c(insights, "TAT compliance needs improvement - review bottlenecks")
+}
+
+# Cost insight
+if (current$cost_per_test < current$cost_target) {
+  insights <- c(insights, "Cost per test is within budget - continue optimization efforts")
+} else {
+  insights <- c(insights, "Cost per test exceeds target - review high-cost areas")
+}
+
+# Volume insight
+if (!is.na(current$volume_yoy_change) && current$volume_yoy_change > 0) {
+  insights <- c(insights, sprintf("Test volume grew %.1f%% year-over-year", current$volume_yoy_change))
+}
+
+tibble(
+  ` ` = seq_along(insights),
+  Insight = insights
+) |>
+  gt() |>
+  tab_header(title = "Key Insights This Month") |>
+  cols_hide(` `)
+```
+
+## Recommendations for Leadership
+
+Based on current scorecard data:
+
+1. **Quality Focus**: `r if_else(current$quality_status != "Green", "Convene quality improvement team to address declining metrics", "Continue current quality initiatives")`
+
+2. **Operational Efficiency**: TAT compliance at `r sprintf("%.1f%%", current$tat_compliance)` - `r if_else(current$tat_compliance >= 90, "meeting expectations", "consider process optimization")`
+
+3. **Financial Stewardship**: Cost per test `r if_else(current$cost_per_test <= current$cost_target, "within", "exceeds")` target
+
+4. **Strategic Planning**: Review strategic initiative progress at next leadership meeting
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Monthly*
+
+*Primary audience: Hospital Executives, Medical Lab Director, Technical/Financial Director*
+
+*Next review: `r format(current_month + months(1), "%B %Y")`*

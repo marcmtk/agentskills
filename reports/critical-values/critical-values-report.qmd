@@ -1,0 +1,328 @@
+---
+title: "Critical Value Notification Report"
+subtitle: "Time to Notification, Compliance Tracking, and Provider Acknowledgment"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+critical_data <- readRDS("data/critical_values.rds")
+
+# Current month
+current_month <- max(critical_data$summary$month)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+## Executive Summary
+
+Critical value notification within 30 minutes is an accreditation requirement (CAP, ISO 15189). This report tracks notification timeliness, success rates, and identifies improvement opportunities.
+
+```{r summary-metrics}
+current_summary <- critical_data$summary |>
+  filter(month == current_month)
+
+tibble(
+  Metric = c(
+    "Total Critical Values",
+    "Notified Within 30 min",
+    "Compliance Rate",
+    "Failed Notifications",
+    "Mean Notification Time",
+    "P90 Notification Time"
+  ),
+  Value = c(
+    comma(current_summary$total_criticals),
+    comma(current_summary$notified_within_30),
+    sprintf("%.1f%%", current_summary$compliance_rate),
+    comma(current_summary$failed_notifications),
+    sprintf("%.1f min", current_summary$mean_notification_time),
+    sprintf("%.1f min", current_summary$p90_notification_time)
+  ),
+  Target = c("-", "-", ">95%", "0", "<15 min", "<30 min")
+) |>
+  gt() |>
+  tab_header(
+    title = "Critical Value Summary",
+    subtitle = format(current_month, "%B %Y")
+  ) |>
+  data_color(
+    columns = Value,
+    rows = Metric == "Compliance Rate",
+    palette = c("#dc3545", "#28a745"),
+    domain = c(90, 100)
+  )
+```
+
+## Compliance Trend
+
+```{r compliance-trend, fig.width=10, fig.height=4}
+ggplot(critical_data$summary, aes(x = month, y = compliance_rate)) +
+  geom_line(color = "#2c7fb8", linewidth = 1.2) +
+  geom_point(color = "#2c7fb8", size = 3) +
+  geom_hline(yintercept = 95, linetype = "dashed", color = "#28a745", linewidth = 1) +
+  annotate("text", x = min(critical_data$summary$month), y = 96,
+           label = "Target: 95%", hjust = 0, color = "#28a745", fontface = "bold") +
+  scale_y_continuous(limits = c(85, 100)) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Critical Value Notification Compliance",
+    subtitle = "Percentage notified within 30 minutes",
+    x = NULL,
+    y = "Compliance Rate (%)"
+  )
+```
+
+## Notification Time Distribution
+
+```{r time-distribution, fig.width=10, fig.height=5}
+# Get last 3 months of events
+recent_events <- critical_data$events |>
+  filter(datetime >= current_month - months(3), notification_success)
+
+ggplot(recent_events, aes(x = time_to_notify)) +
+  geom_histogram(binwidth = 5, fill = "#2c7fb8", color = "white", alpha = 0.8) +
+  geom_vline(xintercept = 30, linetype = "dashed", color = "#dc3545", linewidth = 1) +
+  annotate("text", x = 32, y = Inf, label = "30 min target", hjust = 0, vjust = 2,
+           color = "#dc3545", fontface = "bold") +
+  scale_x_continuous(limits = c(0, 60)) +
+  labs(
+    title = "Notification Time Distribution",
+    subtitle = "Last 3 months",
+    x = "Time to Notification (minutes)",
+    y = "Count"
+  )
+```
+
+## Performance by Test Type
+
+```{r by-test-type}
+test_performance <- critical_data$events |>
+  filter(datetime >= current_month - months(3)) |>
+  group_by(test) |>
+  summarise(
+    total = n(),
+    notified_in_time = sum(within_30_min, na.rm = TRUE),
+    compliance_rate = notified_in_time / total * 100,
+    mean_time = mean(time_to_notify, na.rm = TRUE),
+    failed = sum(!notification_success),
+    .groups = "drop"
+  ) |>
+  arrange(compliance_rate)
+
+test_performance |>
+  gt() |>
+  tab_header(title = "Performance by Test Type - Last 3 Months") |>
+  fmt_number(columns = c(compliance_rate, mean_time), decimals = 1) |>
+  cols_label(
+    total = "Total",
+    notified_in_time = "On Time",
+    compliance_rate = "Compliance %",
+    mean_time = "Mean Time (min)",
+    failed = "Failed"
+  ) |>
+  data_color(
+    columns = compliance_rate,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(85, 95, 100)
+  )
+```
+
+## Performance by Unit
+
+```{r by-unit, fig.width=10, fig.height=5}
+unit_performance <- critical_data$events |>
+  filter(datetime >= current_month - months(3)) |>
+  group_by(ordering_unit) |>
+  summarise(
+    total = n(),
+    compliance_rate = sum(within_30_min, na.rm = TRUE) / n() * 100,
+    .groups = "drop"
+  )
+
+ggplot(unit_performance, aes(x = reorder(ordering_unit, compliance_rate), y = compliance_rate)) +
+  geom_col(aes(fill = compliance_rate >= 95)) +
+  geom_hline(yintercept = 95, linetype = "dashed", color = "#28a745") +
+  coord_flip() +
+  scale_fill_manual(values = c("FALSE" = "#ffc107", "TRUE" = "#28a745"), guide = "none") +
+  scale_y_continuous(limits = c(80, 100)) +
+  labs(
+    title = "Compliance by Ordering Unit",
+    subtitle = "Target: >95%",
+    x = NULL,
+    y = "Compliance Rate (%)"
+  )
+```
+
+## Time of Day Analysis
+
+```{r time-of-day, fig.width=10, fig.height=5}
+hourly_performance <- critical_data$events |>
+  filter(datetime >= current_month - months(3), notification_success) |>
+  mutate(hour = hour(datetime)) |>
+  group_by(hour) |>
+  summarise(
+    count = n(),
+    mean_time = mean(time_to_notify, na.rm = TRUE),
+    compliance = sum(within_30_min, na.rm = TRUE) / n() * 100,
+    .groups = "drop"
+  )
+
+ggplot(hourly_performance, aes(x = hour)) +
+  geom_col(aes(y = count), fill = "#2c7fb8", alpha = 0.5) +
+  geom_line(aes(y = compliance * max(count) / 100), color = "#dc3545", linewidth = 1.2) +
+  geom_point(aes(y = compliance * max(count) / 100), color = "#dc3545", size = 2) +
+  scale_y_continuous(
+    name = "Critical Value Count",
+    sec.axis = sec_axis(~. * 100 / max(hourly_performance$count), name = "Compliance (%)")
+  ) +
+  scale_x_continuous(breaks = seq(0, 23, 3)) +
+  labs(
+    title = "Critical Values by Hour of Day",
+    subtitle = "Bar: volume, Line: compliance rate",
+    x = "Hour of Day"
+  )
+```
+
+## Failed Notifications
+
+Events where notification was not successfully completed.
+
+```{r failed-notifications}
+failed <- critical_data$events |>
+  filter(!notification_success) |>
+  arrange(desc(datetime)) |>
+  select(datetime, test, ordering_unit, ordering_provider) |>
+  mutate(
+    date = as.Date(datetime),
+    time = format(datetime, "%H:%M")
+  ) |>
+  select(date, time, test, ordering_unit, ordering_provider) |>
+  head(20)
+
+if (nrow(failed) > 0) {
+  failed |>
+    gt() |>
+    tab_header(
+      title = "Failed Notifications",
+      subtitle = "Most recent - requires follow-up"
+    )
+} else {
+  cat("No failed notifications in the dataset.")
+}
+```
+
+## Near Misses (25-30 minutes)
+
+Notifications that were close to the deadline.
+
+```{r near-misses}
+near_misses <- critical_data$events |>
+  filter(notification_success, time_to_notify >= 25, time_to_notify <= 30) |>
+  arrange(desc(datetime)) |>
+  mutate(
+    date = as.Date(datetime),
+    time = format(datetime, "%H:%M")
+  ) |>
+  select(date, time, test, ordering_unit, time_to_notify) |>
+  head(15)
+
+if (nrow(near_misses) > 0) {
+  near_misses |>
+    gt() |>
+    tab_header(
+      title = "Near Misses (25-30 minutes)",
+      subtitle = "Identify process improvement opportunities"
+    ) |>
+    fmt_number(columns = time_to_notify, decimals = 1) |>
+    cols_label(time_to_notify = "Time (min)")
+}
+```
+
+## Attempts Required
+
+Number of contact attempts needed for successful notifications.
+
+```{r attempts-analysis, fig.width=8, fig.height=4}
+attempts_data <- critical_data$events |>
+  filter(notification_success, datetime >= current_month - months(3)) |>
+  count(attempts_needed) |>
+  mutate(pct = n / sum(n) * 100)
+
+ggplot(attempts_data, aes(x = factor(attempts_needed), y = n)) +
+  geom_col(fill = "#2c7fb8") +
+  geom_text(aes(label = sprintf("%.0f%%", pct)), vjust = -0.5) +
+  labs(
+    title = "Contact Attempts Required for Notification",
+    x = "Number of Attempts",
+    y = "Count"
+  )
+```
+
+## Monthly Trend Detail
+
+```{r monthly-trend}
+critical_data$summary |>
+  arrange(desc(month)) |>
+  gt() |>
+  tab_header(title = "Monthly Performance Detail") |>
+  fmt_number(columns = c(compliance_rate, mean_notification_time, p90_notification_time), decimals = 1) |>
+  fmt_date(columns = month, date_style = "yMMM") |>
+  cols_label(
+    month = "Month",
+    total_criticals = "Total",
+    notified_within_30 = "On Time",
+    failed_notifications = "Failed",
+    mean_notification_time = "Mean (min)",
+    p90_notification_time = "P90 (min)",
+    compliance_rate = "Compliance %"
+  ) |>
+  data_color(
+    columns = compliance_rate,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(85, 95, 100)
+  )
+```
+
+## Recommendations
+
+Based on current data:
+
+1. **Overall Performance**: Compliance is `r sprintf("%.1f%%", current_summary$compliance_rate)` - `r if_else(current_summary$compliance_rate >= 95, "meeting target", "below target")`
+
+2. **Focus Areas**:
+   - Tests with lowest compliance should be prioritized for process review
+   - Night shift hours may benefit from additional staffing or streamlined protocols
+
+3. **Root Cause Analysis**: For failed notifications, investigate:
+   - Provider contact information accuracy
+   - On-call schedule accessibility
+   - Callback protocols
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Daily*
+
+*Primary audience: Medical Lab Director, Quality Manager*
