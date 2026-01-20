@@ -1,0 +1,376 @@
+---
+title: "Cost Per Test Analysis"
+subtitle: "Laboratory Cost Tracking, Margin Analysis, and Financial Performance"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+cost_data <- readRDS("data/cost_data.rds")
+
+# Current month
+current_month <- max(cost_data$section_summary$month)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+## Executive Summary
+
+This report provides visibility into laboratory costs by test, section, and cost component. Key metrics include cost per test, margin analysis, and cost trends over time.
+
+```{r summary-metrics}
+current_section <- cost_data$section_summary |>
+  filter(month == current_month)
+
+totals <- current_section |>
+  summarise(
+    volume = sum(total_volume),
+    expense = sum(total_expense),
+    revenue = sum(total_revenue),
+    margin = sum(total_margin),
+    avg_cost = expense / volume
+  )
+
+tibble(
+  Metric = c("Total Test Volume", "Total Expense", "Total Revenue",
+             "Net Margin", "Average Cost per Test"),
+  Value = c(
+    comma(totals$volume),
+    dollar(totals$expense),
+    dollar(totals$revenue),
+    dollar(totals$margin),
+    dollar(totals$avg_cost)
+  )
+) |>
+  gt() |>
+  tab_header(
+    title = "Financial Summary",
+    subtitle = format(current_month, "%B %Y")
+  )
+```
+
+## Cost Trend by Section
+
+```{r section-trend, fig.width=10, fig.height=5}
+ggplot(cost_data$section_summary, aes(x = month, y = avg_cost_per_test, color = section)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = dollar) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Average Cost per Test by Section",
+    x = NULL,
+    y = "Cost per Test",
+    color = "Section"
+  ) +
+  scale_color_brewer(palette = "Set2")
+```
+
+## Section Financial Performance
+
+```{r section-performance}
+current_section |>
+  mutate(
+    margin_pct = total_margin / total_revenue * 100
+  ) |>
+  select(section, total_volume, total_expense, total_revenue, total_margin, margin_pct, avg_cost_per_test) |>
+  gt() |>
+  tab_header(
+    title = "Section Financial Performance",
+    subtitle = format(current_month, "%B %Y")
+  ) |>
+  fmt_number(columns = total_volume, decimals = 0) |>
+  fmt_currency(columns = c(total_expense, total_revenue, total_margin, avg_cost_per_test)) |>
+  fmt_percent(columns = margin_pct, scale_values = FALSE, decimals = 1) |>
+  cols_label(
+    total_volume = "Volume",
+    total_expense = "Expense",
+    total_revenue = "Revenue",
+    total_margin = "Margin",
+    margin_pct = "Margin %",
+    avg_cost_per_test = "Cost/Test"
+  ) |>
+  data_color(
+    columns = margin_pct,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(0, 15, 30)
+  )
+```
+
+## Cost Components
+
+```{r cost-components, fig.width=10, fig.height=5}
+# Aggregate by component for current month
+component_data <- cost_data$monthly |>
+  filter(month == current_month) |>
+  summarise(
+    Reagents = sum(reagent_total),
+    Labor = sum(labor_total),
+    Overhead = sum(overhead_total)
+  ) |>
+  pivot_longer(everything(), names_to = "component", values_to = "cost")
+
+ggplot(component_data, aes(x = "", y = cost, fill = component)) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = paste0(component, "\n", dollar(cost))),
+            position = position_stack(vjust = 0.5), color = "white", fontface = "bold") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Cost Breakdown by Component") +
+  theme_void() +
+  theme(legend.position = "none")
+```
+
+## Cost Trend by Component
+
+```{r component-trend, fig.width=10, fig.height=5}
+component_monthly <- cost_data$monthly |>
+  group_by(month) |>
+  summarise(
+    Reagents = sum(reagent_total),
+    Labor = sum(labor_total),
+    Overhead = sum(overhead_total),
+    .groups = "drop"
+  ) |>
+  pivot_longer(-month, names_to = "component", values_to = "cost")
+
+ggplot(component_monthly, aes(x = month, y = cost, fill = component)) +
+  geom_area(alpha = 0.7) +
+  scale_y_continuous(labels = dollar) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Cost Trend by Component",
+    x = NULL,
+    y = "Total Cost",
+    fill = "Component"
+  )
+```
+
+## High Cost Tests
+
+Tests with highest cost per test.
+
+```{r high-cost-tests}
+high_cost <- cost_data$test_costs |>
+  arrange(desc(total_cost)) |>
+  head(15) |>
+  select(test, section, reagent_cost, labor_cost, overhead_cost, total_cost, reimbursement) |>
+  mutate(margin = reimbursement - total_cost)
+
+high_cost |>
+  gt() |>
+  tab_header(title = "Highest Cost Tests") |>
+  fmt_currency(columns = c(reagent_cost, labor_cost, overhead_cost, total_cost, reimbursement, margin)) |>
+  cols_label(
+    reagent_cost = "Reagent",
+    labor_cost = "Labor",
+    overhead_cost = "Overhead",
+    total_cost = "Total Cost",
+    reimbursement = "Reimburse",
+    margin = "Margin"
+  ) |>
+  data_color(
+    columns = margin,
+    palette = c("#dc3545", "#28a745"),
+    domain = c(-10, 30)
+  )
+```
+
+## High Volume Tests (Cost Impact)
+
+Tests with highest total cost due to volume.
+
+```{r high-volume-cost}
+volume_cost <- cost_data$monthly |>
+  filter(month == current_month) |>
+  mutate(
+    total_cost = reagent_total + labor_total + overhead_total
+  ) |>
+  arrange(desc(total_cost)) |>
+  head(15) |>
+  select(test, section, volume, cost_per_test, total_cost)
+
+volume_cost |>
+  gt() |>
+  tab_header(
+    title = "Highest Cost Impact Tests (by Volume)",
+    subtitle = format(current_month, "%B %Y")
+  ) |>
+  fmt_number(columns = volume, decimals = 0) |>
+  fmt_currency(columns = c(cost_per_test, total_cost)) |>
+  cols_label(
+    cost_per_test = "Cost/Test",
+    total_cost = "Total Cost"
+  )
+```
+
+## Margin Analysis
+
+```{r margin-analysis, fig.width=10, fig.height=6}
+margin_data <- cost_data$monthly |>
+  filter(month == current_month) |>
+  mutate(
+    margin_pct = (revenue - (reagent_total + labor_total + overhead_total)) /
+                  revenue * 100
+  ) |>
+  select(test, section, margin_pct) |>
+  arrange(margin_pct)
+
+# Show bottom and top performers
+margin_extreme <- bind_rows(
+  margin_data |> head(10) |> mutate(category = "Lowest Margin"),
+  margin_data |> tail(10) |> mutate(category = "Highest Margin")
+)
+
+ggplot(margin_extreme, aes(x = reorder(test, margin_pct), y = margin_pct, fill = margin_pct > 0)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~category, scales = "free_y") +
+  scale_fill_manual(values = c("FALSE" = "#dc3545", "TRUE" = "#28a745"), guide = "none") +
+  labs(
+    title = "Margin by Test (Top and Bottom 10)",
+    x = NULL,
+    y = "Margin (%)"
+  )
+```
+
+## Cost Per Test Trend
+
+```{r cost-trend, fig.width=10, fig.height=5}
+overall_cost <- cost_data$section_summary |>
+  group_by(month) |>
+  summarise(
+    volume = sum(total_volume),
+    expense = sum(total_expense),
+    cost_per_test = expense / volume,
+    .groups = "drop"
+  )
+
+ggplot(overall_cost, aes(x = month, y = cost_per_test)) +
+  geom_line(color = "#2c7fb8", linewidth = 1.2) +
+  geom_point(color = "#2c7fb8", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "#dc3545") +
+  scale_y_continuous(labels = dollar) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Overall Cost per Test Trend",
+    subtitle = "Dashed line shows linear trend",
+    x = NULL,
+    y = "Cost per Test"
+  )
+```
+
+## Variance Analysis
+
+Month-over-month cost changes.
+
+```{r variance-analysis}
+variance <- cost_data$section_summary |>
+  arrange(section, month) |>
+  group_by(section) |>
+  mutate(
+    prev_expense = lag(total_expense),
+    prev_volume = lag(total_volume),
+    expense_change = total_expense - prev_expense,
+    volume_change = total_volume - prev_volume,
+    expense_change_pct = expense_change / prev_expense * 100
+  ) |>
+  filter(month == current_month) |>
+  select(section, total_expense, prev_expense, expense_change, expense_change_pct,
+         total_volume, volume_change)
+
+variance |>
+  gt() |>
+  tab_header(
+    title = "Month-over-Month Variance",
+    subtitle = format(current_month, "%B %Y")
+  ) |>
+  fmt_currency(columns = c(total_expense, prev_expense, expense_change)) |>
+  fmt_number(columns = c(total_volume, volume_change), decimals = 0) |>
+  fmt_percent(columns = expense_change_pct, scale_values = FALSE, decimals = 1) |>
+  cols_label(
+    total_expense = "Current",
+    prev_expense = "Previous",
+    expense_change = "Change ($)",
+    expense_change_pct = "Change %",
+    total_volume = "Volume",
+    volume_change = "Vol Change"
+  ) |>
+  data_color(
+    columns = expense_change_pct,
+    palette = c("#28a745", "#ffc107", "#dc3545"),
+    domain = c(-10, 0, 10)
+  )
+```
+
+## Cost Efficiency Opportunities
+
+Tests where cost reduction could have significant impact.
+
+```{r efficiency-opportunities}
+opportunities <- cost_data$monthly |>
+  filter(month == current_month) |>
+  mutate(
+    total_cost = reagent_total + labor_total + overhead_total,
+    # Opportunity = high cost * high volume * low margin
+    opportunity_score = total_cost * (1 - margin / revenue)
+  ) |>
+  arrange(desc(opportunity_score)) |>
+  head(10) |>
+  select(test, section, volume, cost_per_test, margin, opportunity_score) |>
+  mutate(
+    potential_savings = volume * cost_per_test * 0.1  # Assuming 10% reduction possible
+  )
+
+opportunities |>
+  gt() |>
+  tab_header(
+    title = "Cost Reduction Opportunities",
+    subtitle = "Ranked by potential impact"
+  ) |>
+  fmt_number(columns = c(volume, opportunity_score), decimals = 0) |>
+  fmt_currency(columns = c(cost_per_test, margin, potential_savings)) |>
+  cols_label(
+    cost_per_test = "Cost/Test",
+    opportunity_score = "Impact Score",
+    potential_savings = "10% Savings"
+  )
+```
+
+## Recommendations
+
+Based on cost analysis:
+
+1. **Reagent Costs**: Largest cost component - review contracts and utilization
+2. **High-Cost Tests**: Review reimbursement rates for tests with negative margins
+3. **Volume Impact**: Focus efficiency efforts on high-volume tests for maximum impact
+4. **Trending**: Cost per test showing `r if_else(coef(lm(cost_per_test ~ as.numeric(month), data = overall_cost))[2] > 0, "upward", "downward")` trend
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Monthly*
+
+*Primary audience: Technical/Financial Director, Section Heads*

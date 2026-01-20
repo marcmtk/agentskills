@@ -1,0 +1,405 @@
+---
+title: "Test Utilization Report"
+subtitle: "Ordering Patterns, Appropriate Use, and Send-out Analysis"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+util_data <- readRDS("data/utilization_data.rds")
+
+# Current month
+current_month <- max(util_data$orders$month)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+## Executive Summary
+
+This report analyzes test ordering patterns by department, identifies potential overutilization, and tracks send-out test costs. Key focus: appropriate use and cost optimization.
+
+```{r summary-stats}
+current_orders <- util_data$orders |>
+  filter(month == current_month)
+
+current_sendouts <- util_data$sendouts |>
+  filter(month == current_month)
+
+summary_stats <- current_orders |>
+  summarise(
+    total_orders = sum(order_count),
+    departments = n_distinct(ordering_dept),
+    tests = n_distinct(test),
+    duplicate_count = sum(duplicate_count),
+    duplicate_rate = duplicate_count / total_orders * 100,
+    appropriate_pct = sum(order_count[guideline_appropriate]) / total_orders * 100
+  )
+
+sendout_stats <- current_sendouts |>
+  summarise(
+    volume = sum(volume),
+    cost = sum(total_cost),
+    avg_tat = mean(tat_days)
+  )
+
+tibble(
+  Metric = c("Total Orders", "Ordering Departments", "Tests Ordered",
+             "Duplicate Rate", "Guideline Appropriate",
+             "Send-out Volume", "Send-out Cost"),
+  Value = c(
+    comma(summary_stats$total_orders),
+    summary_stats$departments,
+    summary_stats$tests,
+    sprintf("%.1f%%", summary_stats$duplicate_rate),
+    sprintf("%.1f%%", summary_stats$appropriate_pct),
+    comma(sendout_stats$volume),
+    dollar(sendout_stats$cost)
+  )
+) |>
+  gt() |>
+  tab_header(
+    title = "Utilization Summary",
+    subtitle = format(current_month, "%B %Y")
+  )
+```
+
+## Orders by Department
+
+```{r orders-by-dept, fig.width=10, fig.height=5}
+dept_orders <- util_data$orders |>
+  filter(month == current_month) |>
+  group_by(ordering_dept) |>
+  summarise(
+    total_orders = sum(order_count),
+    .groups = "drop"
+  ) |>
+  arrange(desc(total_orders))
+
+ggplot(dept_orders, aes(x = reorder(ordering_dept, total_orders), y = total_orders)) +
+  geom_col(fill = "#2c7fb8") +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Test Orders by Department",
+    subtitle = format(current_month, "%B %Y"),
+    x = NULL,
+    y = "Order Count"
+  )
+```
+
+## Department Ordering Trends
+
+```{r dept-trends, fig.width=10, fig.height=6}
+dept_monthly <- util_data$orders |>
+  group_by(month, ordering_dept) |>
+  summarise(total_orders = sum(order_count), .groups = "drop")
+
+ggplot(dept_monthly, aes(x = month, y = total_orders, color = ordering_dept)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Order Volume Trend by Department",
+    x = NULL,
+    y = "Orders",
+    color = "Department"
+  ) +
+  scale_color_brewer(palette = "Set2")
+```
+
+## Duplicate/Repeat Orders
+
+Tests ordered multiple times that may indicate overutilization.
+
+```{r duplicate-analysis}
+duplicate_by_dept <- util_data$orders |>
+  filter(month == current_month) |>
+  group_by(ordering_dept) |>
+  summarise(
+    total_orders = sum(order_count),
+    duplicates = sum(duplicate_count),
+    duplicate_rate = duplicates / total_orders * 100,
+    .groups = "drop"
+  ) |>
+  arrange(desc(duplicate_rate))
+
+duplicate_by_dept |>
+  gt() |>
+  tab_header(
+    title = "Duplicate Orders by Department",
+    subtitle = format(current_month, "%B %Y")
+  ) |>
+  fmt_number(columns = c(total_orders, duplicates), decimals = 0) |>
+  fmt_percent(columns = duplicate_rate, scale_values = FALSE, decimals = 1) |>
+  data_color(
+    columns = duplicate_rate,
+    palette = c("#28a745", "#ffc107", "#dc3545"),
+    domain = c(0, 5, 15)
+  )
+```
+
+## Guideline Appropriateness
+
+Analysis of orders meeting clinical guideline criteria.
+
+```{r appropriateness, fig.width=10, fig.height=5}
+appropriateness <- util_data$orders |>
+  filter(month == current_month) |>
+  group_by(ordering_dept) |>
+  summarise(
+    total = sum(order_count),
+    appropriate = sum(order_count[guideline_appropriate]),
+    inappropriate = total - appropriate,
+    appropriate_pct = appropriate / total * 100,
+    .groups = "drop"
+  ) |>
+  arrange(appropriate_pct)
+
+ggplot(appropriateness, aes(x = reorder(ordering_dept, appropriate_pct), y = appropriate_pct)) +
+  geom_col(aes(fill = appropriate_pct >= 85)) +
+  geom_hline(yintercept = 85, linetype = "dashed", color = "#28a745") +
+  coord_flip() +
+  scale_fill_manual(values = c("FALSE" = "#ffc107", "TRUE" = "#28a745"), guide = "none") +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(
+    title = "Guideline Appropriateness by Department",
+    subtitle = "Target: >85%",
+    x = NULL,
+    y = "Appropriate (%)"
+  )
+```
+
+## Top Tests by Volume
+
+```{r top-tests}
+top_tests <- util_data$orders |>
+  filter(month == current_month) |>
+  group_by(test) |>
+  summarise(
+    total_orders = sum(order_count),
+    departments = n_distinct(ordering_dept),
+    duplicate_rate = sum(duplicate_count) / sum(order_count) * 100,
+    .groups = "drop"
+  ) |>
+  arrange(desc(total_orders)) |>
+  head(20)
+
+top_tests |>
+  gt() |>
+  tab_header(title = "Top 20 Tests by Volume") |>
+  fmt_number(columns = c(total_orders, departments), decimals = 0) |>
+  fmt_percent(columns = duplicate_rate, scale_values = FALSE, decimals = 1) |>
+  cols_label(
+    total_orders = "Orders",
+    departments = "Depts",
+    duplicate_rate = "Dup Rate"
+  )
+```
+
+## Utilization Tiers
+
+Distribution of tests by utilization level.
+
+```{r utilization-tiers, fig.width=8, fig.height=4}
+tier_dist <- util_data$orders |>
+  filter(month == current_month) |>
+  count(utilization_tier) |>
+  mutate(
+    tier = factor(utilization_tier, levels = c("Low", "Medium", "High")),
+    pct = n / sum(n) * 100
+  )
+
+ggplot(tier_dist, aes(x = tier, y = n, fill = tier)) +
+  geom_col() +
+  geom_text(aes(label = sprintf("%d\n(%.0f%%)", n, pct)), vjust = -0.3) +
+  scale_fill_manual(values = c("Low" = "#17a2b8", "Medium" = "#ffc107", "High" = "#28a745")) +
+  labs(
+    title = "Test Distribution by Utilization Tier",
+    x = "Tier",
+    y = "Count"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Send-out Tests
+
+External reference lab testing analysis.
+
+```{r sendout-analysis}
+sendout_summary <- util_data$sendouts |>
+  filter(month == current_month) |>
+  arrange(desc(total_cost))
+
+sendout_summary |>
+  gt() |>
+  tab_header(
+    title = "Send-out Test Summary",
+    subtitle = format(current_month, "%B %Y")
+  ) |>
+  fmt_number(columns = volume, decimals = 0) |>
+  fmt_currency(columns = c(cost_per_test, total_cost)) |>
+  cols_label(
+    cost_per_test = "Cost/Test",
+    total_cost = "Total Cost",
+    tat_days = "TAT (days)"
+  )
+```
+
+## Send-out Cost Trend
+
+```{r sendout-trend, fig.width=10, fig.height=4}
+sendout_monthly <- util_data$sendouts |>
+  group_by(month) |>
+  summarise(
+    total_cost = sum(total_cost),
+    total_volume = sum(volume),
+    .groups = "drop"
+  )
+
+ggplot(sendout_monthly, aes(x = month, y = total_cost)) +
+  geom_line(color = "#dc3545", linewidth = 1.2) +
+  geom_point(color = "#dc3545", size = 3) +
+  scale_y_continuous(labels = dollar) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "Send-out Test Costs Over Time",
+    x = NULL,
+    y = "Total Cost"
+  )
+```
+
+## Send-out by Reference Lab
+
+```{r sendout-by-lab, fig.width=8, fig.height=4}
+lab_summary <- util_data$sendouts |>
+  filter(month == current_month) |>
+  group_by(reference_lab) |>
+  summarise(
+    tests = n(),
+    volume = sum(volume),
+    cost = sum(total_cost),
+    avg_tat = mean(tat_days),
+    .groups = "drop"
+  ) |>
+  arrange(desc(cost))
+
+lab_summary |>
+  gt() |>
+  tab_header(title = "Send-outs by Reference Lab") |>
+  fmt_number(columns = c(tests, volume), decimals = 0) |>
+  fmt_currency(columns = cost) |>
+  fmt_number(columns = avg_tat, decimals = 1) |>
+  cols_label(avg_tat = "Avg TAT (days)")
+```
+
+## Low-Value Test Identification
+
+Tests with potential for reduction based on duplicate rates and appropriateness.
+
+```{r low-value}
+low_value <- util_data$orders |>
+  filter(month == current_month) |>
+  group_by(test) |>
+  summarise(
+    total_orders = sum(order_count),
+    duplicate_rate = sum(duplicate_count) / sum(order_count) * 100,
+    appropriate_pct = sum(order_count[guideline_appropriate]) / sum(order_count) * 100,
+    .groups = "drop"
+  ) |>
+  filter(duplicate_rate > 10 | appropriate_pct < 80) |>
+  mutate(
+    concern = case_when(
+      duplicate_rate > 15 & appropriate_pct < 80 ~ "High - Review urgently",
+      duplicate_rate > 10 | appropriate_pct < 80 ~ "Medium - Consider intervention"
+    )
+  ) |>
+  arrange(desc(duplicate_rate)) |>
+  head(15)
+
+if (nrow(low_value) > 0) {
+  low_value |>
+    gt() |>
+    tab_header(
+      title = "Tests Flagged for Utilization Review",
+      subtitle = "High duplicate rate or low appropriateness"
+    ) |>
+    fmt_number(columns = total_orders, decimals = 0) |>
+    fmt_percent(columns = c(duplicate_rate, appropriate_pct), scale_values = FALSE, decimals = 1) |>
+    data_color(
+      columns = concern,
+      palette = c(
+        "High - Review urgently" = "#dc3545",
+        "Medium - Consider intervention" = "#ffc107"
+      )
+    )
+}
+```
+
+## Month-over-Month Change
+
+```{r mom-change}
+mom_change <- util_data$orders |>
+  group_by(month) |>
+  summarise(total = sum(order_count), .groups = "drop") |>
+  arrange(month) |>
+  mutate(
+    prev = lag(total),
+    change = total - prev,
+    change_pct = change / prev * 100
+  ) |>
+  filter(!is.na(change)) |>
+  tail(6)
+
+mom_change |>
+  gt() |>
+  tab_header(title = "Order Volume Trend - Last 6 Months") |>
+  fmt_date(columns = month, date_style = "yMMM") |>
+  fmt_number(columns = c(total, prev, change), decimals = 0) |>
+  fmt_percent(columns = change_pct, scale_values = FALSE, decimals = 1) |>
+  cols_label(
+    prev = "Previous",
+    change_pct = "Change %"
+  ) |>
+  data_color(
+    columns = change_pct,
+    palette = c("#28a745", "#ffc107", "#dc3545"),
+    domain = c(-10, 0, 10)
+  )
+```
+
+## Recommendations
+
+Based on utilization analysis:
+
+1. **Duplicate Orders**: Departments with >10% duplicate rate should review ordering protocols
+2. **Appropriateness**: Implement decision support for tests with <80% appropriateness
+3. **Send-outs**: Evaluate highest-cost send-outs for potential in-house development
+4. **Low-Value Tests**: Review flagged tests with clinical stakeholders
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Monthly*
+
+*Primary audience: Medical Director, Clinical Department Heads, Financial Director*

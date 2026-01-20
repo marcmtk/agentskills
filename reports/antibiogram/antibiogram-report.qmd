@@ -1,0 +1,403 @@
+---
+title: "Antibiogram Dashboard"
+subtitle: "Antimicrobial Susceptibility Patterns and Resistance Trends"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+abx_data <- readRDS("data/antibiogram.rds")
+
+# Current quarter
+current_quarter <- max(abx_data$data$quarter)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+## Executive Summary
+
+This antibiogram presents antimicrobial susceptibility data to guide empiric therapy decisions. Data is aggregated quarterly from clinical isolates. Primary audience: Clinical Microbiologists, Infection Prevention, Clinical Department Heads.
+
+```{r summary-stats}
+current_data <- abx_data$data |>
+  filter(quarter == current_quarter)
+
+summary_stats <- current_data |>
+  summarise(
+    organisms = n_distinct(organism),
+    antibiotics = n_distinct(antibiotic),
+    total_isolates = sum(isolate_count),
+    overall_susceptibility = sum(susceptible_count) / sum(isolate_count) * 100
+  )
+
+tibble(
+  Metric = c("Organisms Tested", "Antibiotics Tested", "Total Isolates",
+             "Overall Susceptibility"),
+  Value = c(
+    summary_stats$organisms,
+    summary_stats$antibiotics,
+    comma(summary_stats$total_isolates),
+    sprintf("%.1f%%", summary_stats$overall_susceptibility)
+  )
+) |>
+  gt() |>
+  tab_header(
+    title = "Antibiogram Summary",
+    subtitle = format(current_quarter, "%Y Q%q")
+  )
+```
+
+## Complete Antibiogram Matrix
+
+```{r antibiogram-matrix}
+# Create the classic antibiogram matrix
+matrix_data <- current_data |>
+  mutate(
+    susceptibility_pct = round(susceptibility_rate * 100)
+  ) |>
+  select(organism, antibiotic, susceptibility_pct) |>
+  pivot_wider(names_from = antibiotic, values_from = susceptibility_pct)
+
+# Create GT table with color coding
+matrix_data |>
+  gt() |>
+  tab_header(
+    title = "Antibiogram - Susceptibility Percentages",
+    subtitle = format(current_quarter, "%Y Q%q")
+  ) |>
+  data_color(
+    columns = -organism,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(0, 50, 100),
+    na_color = "#e9ecef"
+  ) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(columns = organism)
+  ) |>
+  tab_footnote(
+    footnote = "Values represent percentage susceptible. Colors: Red <50%, Yellow 50-80%, Green >80%",
+    locations = cells_column_labels(columns = 2)
+  )
+```
+
+## Gram-Negative Organisms
+
+Detailed view for key Gram-negative pathogens.
+
+```{r gram-negative}
+gram_neg <- c("E. coli", "K. pneumoniae", "P. aeruginosa", "Enterobacter spp.",
+              "Proteus spp.", "Acinetobacter spp.")
+
+gn_data <- current_data |>
+  filter(organism %in% gram_neg) |>
+  mutate(susceptibility_pct = round(susceptibility_rate * 100)) |>
+  select(organism, antibiotic, susceptibility_pct) |>
+  pivot_wider(names_from = antibiotic, values_from = susceptibility_pct)
+
+gn_data |>
+  gt() |>
+  tab_header(title = "Gram-Negative Susceptibility") |>
+  data_color(
+    columns = -organism,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(0, 50, 100),
+    na_color = "#e9ecef"
+  )
+```
+
+## Gram-Positive Organisms
+
+Detailed view for key Gram-positive pathogens.
+
+```{r gram-positive}
+gram_pos <- c("S. aureus", "MRSA", "E. faecalis", "E. faecium")
+
+gp_data <- current_data |>
+  filter(organism %in% gram_pos) |>
+  mutate(susceptibility_pct = round(susceptibility_rate * 100)) |>
+  select(organism, antibiotic, susceptibility_pct) |>
+  pivot_wider(names_from = antibiotic, values_from = susceptibility_pct)
+
+gp_data |>
+  gt() |>
+  tab_header(title = "Gram-Positive Susceptibility") |>
+  data_color(
+    columns = -organism,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(0, 50, 100),
+    na_color = "#e9ecef"
+  )
+```
+
+## Resistance Trends - E. coli
+
+```{r ecoli-trends, fig.width=10, fig.height=5}
+ecoli_trend <- abx_data$data |>
+  filter(organism == "E. coli") |>
+  mutate(resistance_rate = (1 - susceptibility_rate) * 100)
+
+key_antibiotics <- c("Ampicillin", "Ceftriaxone", "Ciprofloxacin", "Meropenem", "TMP/SMX")
+
+ecoli_key <- ecoli_trend |>
+  filter(antibiotic %in% key_antibiotics)
+
+ggplot(ecoli_key, aes(x = quarter, y = resistance_rate, color = antibiotic)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_y_continuous(limits = c(0, 60)) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%Y Q%q") +
+  labs(
+    title = "E. coli Resistance Trends",
+    subtitle = "Key antibiotics over time",
+    x = NULL,
+    y = "Resistance Rate (%)",
+    color = "Antibiotic"
+  ) +
+  scale_color_brewer(palette = "Set1")
+```
+
+## Resistance Trends - MRSA
+
+```{r mrsa-trends, fig.width=10, fig.height=5}
+mrsa_trend <- abx_data$data |>
+  filter(organism == "MRSA") |>
+  mutate(resistance_rate = (1 - susceptibility_rate) * 100)
+
+mrsa_antibiotics <- c("Vancomycin", "Linezolid", "TMP/SMX", "Daptomycin")
+
+mrsa_key <- mrsa_trend |>
+  filter(antibiotic %in% mrsa_antibiotics)
+
+if (nrow(mrsa_key) > 0) {
+  ggplot(mrsa_key, aes(x = quarter, y = susceptibility_rate * 100, color = antibiotic)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    scale_y_continuous(limits = c(90, 100)) +
+    scale_x_date(date_breaks = "3 months", date_labels = "%Y Q%q") +
+    labs(
+      title = "MRSA Susceptibility Trends",
+      subtitle = "Key anti-MRSA agents",
+      x = NULL,
+      y = "Susceptibility Rate (%)",
+      color = "Antibiotic"
+    ) +
+    scale_color_brewer(palette = "Set2")
+}
+```
+
+## Resistance Trends - P. aeruginosa
+
+```{r pseudo-trends, fig.width=10, fig.height=5}
+pseudo_trend <- abx_data$data |>
+  filter(organism == "P. aeruginosa") |>
+  mutate(resistance_rate = (1 - susceptibility_rate) * 100)
+
+pseudo_antibiotics <- c("Ceftazidime", "Cefepime", "Meropenem", "Ciprofloxacin", "Gentamicin")
+
+pseudo_key <- pseudo_trend |>
+  filter(antibiotic %in% pseudo_antibiotics)
+
+if (nrow(pseudo_key) > 0) {
+  ggplot(pseudo_key, aes(x = quarter, y = resistance_rate, color = antibiotic)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    scale_y_continuous(limits = c(0, 40)) +
+    scale_x_date(date_breaks = "3 months", date_labels = "%Y Q%q") +
+    labs(
+      title = "P. aeruginosa Resistance Trends",
+      subtitle = "Antipseudomonal agents",
+      x = NULL,
+      y = "Resistance Rate (%)",
+      color = "Antibiotic"
+    ) +
+    scale_color_brewer(palette = "Set1")
+}
+```
+
+## Isolate Counts by Organism
+
+```{r isolate-counts, fig.width=10, fig.height=5}
+isolate_counts <- current_data |>
+  group_by(organism) |>
+  summarise(
+    total_isolates = sum(isolate_count) / n_distinct(antibiotic),  # Average across antibiotics
+    .groups = "drop"
+  ) |>
+  arrange(desc(total_isolates))
+
+ggplot(isolate_counts, aes(x = reorder(organism, total_isolates), y = total_isolates)) +
+  geom_col(fill = "#2c7fb8") +
+  coord_flip() +
+  labs(
+    title = "Isolate Volume by Organism",
+    subtitle = format(current_quarter, "%Y Q%q"),
+    x = NULL,
+    y = "Average Isolate Count"
+  )
+```
+
+## Concerning Trends
+
+Organisms with declining susceptibility patterns.
+
+```{r concerning-trends}
+# Compare current to prior quarter
+prior_quarter <- current_quarter - months(3)
+
+trend_comparison <- abx_data$data |>
+  filter(quarter %in% c(current_quarter, prior_quarter)) |>
+  mutate(period = if_else(quarter == current_quarter, "current", "prior")) |>
+  select(organism, antibiotic, period, susceptibility_rate) |>
+  pivot_wider(names_from = period, values_from = susceptibility_rate) |>
+  mutate(
+    change = (current - prior) * 100,
+    concern = case_when(
+      change < -10 ~ "Significant decline",
+      change < -5 ~ "Moderate decline",
+      change < 0 ~ "Slight decline",
+      TRUE ~ "Stable/Improving"
+    )
+  ) |>
+  filter(change < -5) |>
+  arrange(change)
+
+if (nrow(trend_comparison) > 0) {
+  trend_comparison |>
+    mutate(
+      current_pct = sprintf("%.0f%%", current * 100),
+      prior_pct = sprintf("%.0f%%", prior * 100),
+      change_pct = sprintf("%+.1f%%", change)
+    ) |>
+    select(organism, antibiotic, prior_pct, current_pct, change_pct, concern) |>
+    gt() |>
+    tab_header(
+      title = "Concerning Resistance Trends",
+      subtitle = "Organisms with >5% decline in susceptibility"
+    ) |>
+    cols_label(
+      prior_pct = "Prior Qtr",
+      current_pct = "Current",
+      change_pct = "Change"
+    ) |>
+    data_color(
+      columns = concern,
+      palette = c(
+        "Significant decline" = "#dc3545",
+        "Moderate decline" = "#ffc107"
+      )
+    )
+} else {
+  cat("No significant declines in susceptibility observed this quarter.")
+}
+```
+
+## Empiric Therapy Recommendations
+
+Based on current antibiogram data.
+
+```{r empiric-therapy}
+# Calculate best empiric choices per organism
+empiric_choices <- current_data |>
+  group_by(organism) |>
+  arrange(desc(susceptibility_rate)) |>
+  slice_head(n = 3) |>
+  mutate(
+    choice_rank = row_number(),
+    susceptibility_pct = sprintf("%.0f%%", susceptibility_rate * 100)
+  ) |>
+  select(organism, choice_rank, antibiotic, susceptibility_pct)
+
+empiric_wide <- empiric_choices |>
+  pivot_wider(
+    names_from = choice_rank,
+    values_from = c(antibiotic, susceptibility_pct),
+    names_glue = "{.value}_{choice_rank}"
+  )
+
+empiric_wide |>
+  select(organism, antibiotic_1, susceptibility_pct_1,
+         antibiotic_2, susceptibility_pct_2) |>
+  gt() |>
+  tab_header(
+    title = "Suggested Empiric Therapy Options",
+    subtitle = "Top 2 choices per organism based on susceptibility"
+  ) |>
+  cols_label(
+    antibiotic_1 = "First Choice",
+    susceptibility_pct_1 = "Susc %",
+    antibiotic_2 = "Second Choice",
+    susceptibility_pct_2 = "Susc %"
+  ) |>
+  tab_spanner(
+    label = "First Choice",
+    columns = c(antibiotic_1, susceptibility_pct_1)
+  ) |>
+  tab_spanner(
+    label = "Second Choice",
+    columns = c(antibiotic_2, susceptibility_pct_2)
+  )
+```
+
+## Quarterly Comparison
+
+Overall susceptibility changes over time.
+
+```{r quarterly-comparison}
+quarterly_summary <- abx_data$data |>
+  group_by(quarter) |>
+  summarise(
+    total_isolates = sum(isolate_count),
+    overall_susceptibility = sum(susceptible_count) / sum(isolate_count) * 100,
+    organisms_tested = n_distinct(organism),
+    .groups = "drop"
+  ) |>
+  arrange(desc(quarter))
+
+quarterly_summary |>
+  gt() |>
+  tab_header(title = "Quarterly Summary") |>
+  fmt_date(columns = quarter, date_style = "yQQQ") |>
+  fmt_number(columns = c(total_isolates, organisms_tested), decimals = 0) |>
+  fmt_number(columns = overall_susceptibility, decimals = 1) |>
+  cols_label(
+    total_isolates = "Isolates",
+    overall_susceptibility = "Overall Susc %",
+    organisms_tested = "Organisms"
+  )
+```
+
+## Notes and Limitations
+
+1. **Data Source**: Clinical isolates from inpatient and outpatient settings
+2. **Duplicate Policy**: First isolate per patient per species per 30 days
+3. **Minimum Isolates**: Antibiotics with <10 isolates not reported
+4. **Updates**: Antibiogram updated quarterly
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Quarterly*
+
+*Primary audience: Clinical Microbiologists, Infection Prevention, Infectious Disease*

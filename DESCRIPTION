@@ -1,0 +1,31 @@
+Type: Project
+Package: labintelligence
+Title: Lab Intelligence Framework
+Version: 0.1.0
+Authors@R:
+    person("Marc Trunjer", "Kusk Nielsen", role = c("aut", "cre"))
+Description: A comprehensive framework for designing, building, and governing
+    Business Intelligence products for clinical laboratories. Includes 9
+    production-ready dashboards, strategic planning workflows, and data
+    sensitivity architecture for AI-assisted development.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.0
+Imports:
+    dplyr (>= 1.1.0),
+    tidyr (>= 1.3.0),
+    purrr (>= 1.0.0),
+    ggplot2 (>= 3.4.0),
+    scales (>= 1.2.0),
+    lubridate (>= 1.9.0),
+    gt (>= 0.9.0)
+Suggests:
+    testthat (>= 3.0.0),
+    lintr (>= 3.0.0),
+    styler (>= 1.9.0),
+    synthpop (>= 1.8.0),
+    renv (>= 1.0.0),
+    arrow (>= 14.0.0),
+    DBI (>= 1.1.0)
+Config/testthat/edition: 3

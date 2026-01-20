@@ -1,0 +1,384 @@
+---
+title: "QC Trending Dashboard"
+subtitle: "Levey-Jennings Charts, Westgard Rules, and Analytical Quality Monitoring"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+qc_data <- readRDS("data/qc_data.rds")
+
+# Last 30 days for focus
+end_date <- max(qc_data$daily$date)
+start_30d <- end_date - days(30)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+## Executive Summary
+
+This dashboard monitors analytical quality through Levey-Jennings control charts and Westgard rule evaluation. Daily QC performance is tracked for all major analytes and instruments.
+
+```{r summary-stats}
+# Overall QC statistics
+summary_stats <- qc_data$daily |>
+  filter(date >= start_30d) |>
+  summarise(
+    total_events = n(),
+    passed = sum(qc_passed),
+    failed = sum(!qc_passed),
+    pass_rate = passed / total_events * 100,
+    westgard_1_2s = sum(westgard_1_2s),
+    westgard_1_3s = sum(westgard_1_3s)
+  )
+
+tibble(
+  Metric = c("Total QC Events (30 days)", "Passed", "Failed",
+             "Pass Rate", "1:2s Violations", "1:3s Violations"),
+  Value = c(
+    comma(summary_stats$total_events),
+    comma(summary_stats$passed),
+    comma(summary_stats$failed),
+    sprintf("%.1f%%", summary_stats$pass_rate),
+    comma(summary_stats$westgard_1_2s),
+    comma(summary_stats$westgard_1_3s)
+  )
+) |>
+  gt() |>
+  tab_header(title = "QC Summary - Last 30 Days")
+```
+
+## Westgard Rule Violations
+
+Current rule violations that require investigation.
+
+```{r westgard-violations}
+violations <- qc_data$daily |>
+  filter(date >= start_30d, westgard_1_2s | westgard_1_3s) |>
+  arrange(desc(date)) |>
+  mutate(
+    rule_violated = case_when(
+      westgard_1_3s ~ "1:3s (Out of Control)",
+      westgard_1_2s ~ "1:2s (Warning)"
+    ),
+    severity = if_else(westgard_1_3s, "Critical", "Warning")
+  ) |>
+  select(date, analyte, level, instrument, result, target, z_score, rule_violated, severity) |>
+  head(20)
+
+if (nrow(violations) > 0) {
+  violations |>
+    gt() |>
+    tab_header(
+      title = "Recent Westgard Rule Violations",
+      subtitle = "Last 30 days - Most recent first"
+    ) |>
+    fmt_number(columns = c(result, target, z_score), decimals = 2) |>
+    data_color(
+      columns = severity,
+      palette = c("Critical" = "#dc3545", "Warning" = "#ffc107")
+    )
+}
+```
+
+## QC Pass Rate by Analyte
+
+```{r pass-rate-analyte, fig.width=10, fig.height=5}
+analyte_performance <- qc_data$daily |>
+  filter(date >= start_30d) |>
+  group_by(analyte) |>
+  summarise(
+    total = n(),
+    passed = sum(qc_passed),
+    pass_rate = passed / total * 100,
+    .groups = "drop"
+  ) |>
+  arrange(pass_rate)
+
+ggplot(analyte_performance, aes(x = reorder(analyte, pass_rate), y = pass_rate)) +
+  geom_col(aes(fill = pass_rate > 95)) +
+  geom_hline(yintercept = 95, linetype = "dashed", color = "#28a745") +
+  coord_flip() +
+  scale_fill_manual(values = c("FALSE" = "#dc3545", "TRUE" = "#28a745"), guide = "none") +
+  scale_y_continuous(limits = c(90, 100)) +
+  labs(
+    title = "QC Pass Rate by Analyte - Last 30 Days",
+    subtitle = "Target: >95%",
+    x = NULL,
+    y = "Pass Rate (%)"
+  )
+```
+
+## Levey-Jennings Charts
+
+### Glucose - Level 2
+
+```{r lj-glucose, fig.width=10, fig.height=4}
+glucose_data <- qc_data$daily |>
+  filter(analyte == "Glucose", level == "Level 2", date >= start_30d)
+
+glucose_target <- glucose_data$target[1]
+glucose_sd <- glucose_data$sd_expected[1]
+
+ggplot(glucose_data, aes(x = date, y = result)) +
+  geom_line(color = "#2c7fb8") +
+  geom_point(aes(color = qc_passed), size = 2) +
+  geom_hline(yintercept = glucose_target, linetype = "solid", color = "black") +
+  geom_hline(yintercept = glucose_target + 2 * glucose_sd, linetype = "dashed", color = "#ffc107") +
+  geom_hline(yintercept = glucose_target - 2 * glucose_sd, linetype = "dashed", color = "#ffc107") +
+  geom_hline(yintercept = glucose_target + 3 * glucose_sd, linetype = "dashed", color = "#dc3545") +
+  geom_hline(yintercept = glucose_target - 3 * glucose_sd, linetype = "dashed", color = "#dc3545") +
+  scale_color_manual(values = c("TRUE" = "#28a745", "FALSE" = "#dc3545"),
+                     labels = c("TRUE" = "Pass", "FALSE" = "Fail")) +
+  labs(
+    title = "Glucose - Level 2 Control",
+    subtitle = sprintf("Target: %.1f | SD: %.2f", glucose_target, glucose_sd),
+    x = NULL,
+    y = "Result",
+    color = "Status"
+  ) +
+  annotate("text", x = max(glucose_data$date), y = glucose_target + 2 * glucose_sd,
+           label = "+2SD", hjust = 1.1, color = "#ffc107") +
+  annotate("text", x = max(glucose_data$date), y = glucose_target + 3 * glucose_sd,
+           label = "+3SD", hjust = 1.1, color = "#dc3545")
+```
+
+### Creatinine - Level 2
+
+```{r lj-creatinine, fig.width=10, fig.height=4}
+creat_data <- qc_data$daily |>
+  filter(analyte == "Creatinine", level == "Level 2", date >= start_30d)
+
+creat_target <- creat_data$target[1]
+creat_sd <- creat_data$sd_expected[1]
+
+ggplot(creat_data, aes(x = date, y = result)) +
+  geom_line(color = "#2c7fb8") +
+  geom_point(aes(color = qc_passed), size = 2) +
+  geom_hline(yintercept = creat_target, linetype = "solid", color = "black") +
+  geom_hline(yintercept = creat_target + 2 * creat_sd, linetype = "dashed", color = "#ffc107") +
+  geom_hline(yintercept = creat_target - 2 * creat_sd, linetype = "dashed", color = "#ffc107") +
+  geom_hline(yintercept = creat_target + 3 * creat_sd, linetype = "dashed", color = "#dc3545") +
+  geom_hline(yintercept = creat_target - 3 * creat_sd, linetype = "dashed", color = "#dc3545") +
+  scale_color_manual(values = c("TRUE" = "#28a745", "FALSE" = "#dc3545"),
+                     labels = c("TRUE" = "Pass", "FALSE" = "Fail")) +
+  labs(
+    title = "Creatinine - Level 2 Control",
+    subtitle = sprintf("Target: %.1f | SD: %.2f", creat_target, creat_sd),
+    x = NULL,
+    y = "Result",
+    color = "Status"
+  )
+```
+
+### Hemoglobin - Level 2
+
+```{r lj-hemoglobin, fig.width=10, fig.height=4}
+hgb_data <- qc_data$daily |>
+  filter(analyte == "Hemoglobin", level == "Level 2", date >= start_30d)
+
+hgb_target <- hgb_data$target[1]
+hgb_sd <- hgb_data$sd_expected[1]
+
+ggplot(hgb_data, aes(x = date, y = result)) +
+  geom_line(color = "#31a354") +
+  geom_point(aes(color = qc_passed), size = 2) +
+  geom_hline(yintercept = hgb_target, linetype = "solid", color = "black") +
+  geom_hline(yintercept = hgb_target + 2 * hgb_sd, linetype = "dashed", color = "#ffc107") +
+  geom_hline(yintercept = hgb_target - 2 * hgb_sd, linetype = "dashed", color = "#ffc107") +
+  geom_hline(yintercept = hgb_target + 3 * hgb_sd, linetype = "dashed", color = "#dc3545") +
+  geom_hline(yintercept = hgb_target - 3 * hgb_sd, linetype = "dashed", color = "#dc3545") +
+  scale_color_manual(values = c("TRUE" = "#28a745", "FALSE" = "#dc3545"),
+                     labels = c("TRUE" = "Pass", "FALSE" = "Fail")) +
+  labs(
+    title = "Hemoglobin - Level 2 Control",
+    subtitle = sprintf("Target: %.1f | SD: %.2f", hgb_target, hgb_sd),
+    x = NULL,
+    y = "Result",
+    color = "Status"
+  )
+```
+
+### Troponin - Level 2
+
+```{r lj-troponin, fig.width=10, fig.height=4}
+trop_data <- qc_data$daily |>
+  filter(analyte == "Troponin", level == "Level 2", date >= start_30d)
+
+trop_target <- trop_data$target[1]
+trop_sd <- trop_data$sd_expected[1]
+
+ggplot(trop_data, aes(x = date, y = result)) +
+  geom_line(color = "#756bb1") +
+  geom_point(aes(color = qc_passed), size = 2) +
+  geom_hline(yintercept = trop_target, linetype = "solid", color = "black") +
+  geom_hline(yintercept = trop_target + 2 * trop_sd, linetype = "dashed", color = "#ffc107") +
+  geom_hline(yintercept = trop_target - 2 * trop_sd, linetype = "dashed", color = "#ffc107") +
+  geom_hline(yintercept = trop_target + 3 * trop_sd, linetype = "dashed", color = "#dc3545") +
+  geom_hline(yintercept = trop_target - 3 * trop_sd, linetype = "dashed", color = "#dc3545") +
+  scale_color_manual(values = c("TRUE" = "#28a745", "FALSE" = "#dc3545"),
+                     labels = c("TRUE" = "Pass", "FALSE" = "Fail")) +
+  labs(
+    title = "Troponin - Level 2 Control",
+    subtitle = sprintf("Target: %.1f | SD: %.2f", trop_target, trop_sd),
+    x = NULL,
+    y = "Result",
+    color = "Status"
+  )
+```
+
+## CV Trend Analysis
+
+Coefficient of Variation (CV) trending by analyte.
+
+```{r cv-trend, fig.width=10, fig.height=6}
+cv_data <- qc_data$summary |>
+  filter(!is.na(cv_cumulative)) |>
+  group_by(analyte, date) |>
+  summarise(cv = mean(cv_cumulative), .groups = "drop")
+
+# Get last 60 days
+cv_recent <- cv_data |>
+  filter(date >= end_date - days(60))
+
+ggplot(cv_recent, aes(x = date, y = cv, color = analyte)) +
+  geom_line(alpha = 0.7) +
+  facet_wrap(~analyte, scales = "free_y", ncol = 2) +
+  labs(
+    title = "CV Trend by Analyte",
+    subtitle = "Last 60 days",
+    x = NULL,
+    y = "CV (%)"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Instrument Performance
+
+```{r instrument-performance}
+instrument_perf <- qc_data$daily |>
+  filter(date >= start_30d) |>
+  group_by(instrument) |>
+  summarise(
+    total_events = n(),
+    pass_rate = sum(qc_passed) / n() * 100,
+    violations_1_2s = sum(westgard_1_2s),
+    violations_1_3s = sum(westgard_1_3s),
+    .groups = "drop"
+  ) |>
+  arrange(pass_rate)
+
+instrument_perf |>
+  gt() |>
+  tab_header(title = "QC Performance by Instrument - Last 30 Days") |>
+  fmt_number(columns = pass_rate, decimals = 1) |>
+  data_color(
+    columns = pass_rate,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(90, 95, 100)
+  )
+```
+
+## Lot Performance
+
+```{r lot-performance}
+lot_perf <- qc_data$daily |>
+  filter(date >= start_30d) |>
+  group_by(lot_number) |>
+  summarise(
+    analytes = n_distinct(analyte),
+    total_events = n(),
+    pass_rate = sum(qc_passed) / n() * 100,
+    .groups = "drop"
+  )
+
+lot_perf |>
+  gt() |>
+  tab_header(title = "QC Performance by Lot Number") |>
+  fmt_number(columns = pass_rate, decimals = 1) |>
+  data_color(
+    columns = pass_rate,
+    palette = c("#dc3545", "#ffc107", "#28a745"),
+    domain = c(90, 95, 100)
+  )
+```
+
+## Corrective Actions Required
+
+```{r corrective-actions}
+# Analytes with concerning trends
+concerning <- qc_data$daily |>
+  filter(date >= start_30d) |>
+  group_by(analyte, instrument) |>
+  summarise(
+    pass_rate = sum(qc_passed) / n() * 100,
+    violations = sum(westgard_1_3s),
+    .groups = "drop"
+  ) |>
+  filter(pass_rate < 95 | violations > 2) |>
+  mutate(
+    action_required = case_when(
+      violations > 5 ~ "Immediate investigation required",
+      violations > 2 ~ "Schedule maintenance review",
+      pass_rate < 93 ~ "Review calibration",
+      TRUE ~ "Monitor closely"
+    )
+  )
+
+if (nrow(concerning) > 0) {
+  concerning |>
+    gt() |>
+    tab_header(title = "Corrective Actions Required") |>
+    fmt_number(columns = pass_rate, decimals = 1) |>
+    data_color(
+      columns = action_required,
+      palette = c(
+        "Immediate investigation required" = "#dc3545",
+        "Schedule maintenance review" = "#ffc107",
+        "Review calibration" = "#ffc107",
+        "Monitor closely" = "#17a2b8"
+      )
+    )
+} else {
+  cat("No corrective actions currently required. All analytes within acceptable limits.")
+}
+```
+
+## Reference: Westgard Rules
+
+| Rule | Description | Action |
+|------|-------------|--------|
+| 1:2s | One control exceeds mean +/- 2SD | Warning - review before accepting results |
+| 1:3s | One control exceeds mean +/- 3SD | Reject run - do not report results |
+| 2:2s | Two consecutive controls exceed same mean +/- 2SD | Reject run |
+| R:4s | One control exceeds +2SD and another exceeds -2SD | Reject run |
+| 4:1s | Four consecutive controls exceed same mean +/- 1SD | Warning - systematic shift |
+| 10:x | Ten consecutive controls on same side of mean | Warning - systematic shift |
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Daily*
+
+*Primary audience: Clinical Chemists, Section Heads, Lab Technologists*

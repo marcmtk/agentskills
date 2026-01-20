@@ -1,0 +1,322 @@
+---
+title: "Activity Volume Dashboard"
+subtitle: "Lab Test Volume Analysis with Year-over-Year Comparison"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+activity_data <- readRDS("data/activity_volume.rds")
+
+# Current period (last complete week)
+current_week <- max(activity_data$weekly$week) - weeks(1)
+current_year <- year(current_week)
+comparison_week <- current_week - years(1)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+## Executive Summary
+
+This dashboard provides visibility into laboratory test volumes across all sections, with year-over-year comparisons and anomaly detection. Primary audiences are the Technical/Financial Director and Section Heads.
+
+```{r summary-metrics}
+# Calculate key metrics
+current_total <- activity_data$weekly |>
+  filter(week == current_week) |>
+  summarise(total = sum(test_count)) |>
+  pull(total)
+
+last_year_total <- activity_data$weekly |>
+  filter(week == comparison_week) |>
+  summarise(total = sum(test_count)) |>
+  pull(total)
+
+yoy_change <- (current_total - last_year_total) / last_year_total * 100
+
+# Summary table
+tibble(
+  Metric = c("Current Week Volume", "Same Week Last Year", "Year-over-Year Change"),
+  Value = c(
+    comma(current_total),
+    comma(last_year_total),
+    paste0(sprintf("%+.1f", yoy_change), "%")
+  )
+) |>
+  gt() |>
+  tab_header(title = "Volume Summary") |>
+  cols_align(align = "right", columns = Value)
+```
+
+## Volume by Section
+
+### Current Week Comparison
+
+```{r section-comparison}
+# Find the closest matching week from last year
+available_weeks <- unique(activity_data$weekly$week)
+comparison_week_actual <- available_weeks[which.min(abs(available_weeks - comparison_week))]
+
+# Only compare if we have data from a reasonable time range (within 2 weeks of target)
+has_comparison <- abs(as.numeric(comparison_week_actual - comparison_week)) < 14
+
+if (has_comparison) {
+  section_comparison <- activity_data$weekly |>
+    filter(week %in% c(current_week, comparison_week_actual)) |>
+    mutate(period = if_else(week == current_week, "Current", "LastYear")) |>
+    select(section, period, test_count) |>
+    pivot_wider(names_from = period, values_from = test_count, values_fill = 0) |>
+    mutate(
+      Change = Current - LastYear,
+      Change_Pct = if_else(LastYear > 0, Change / LastYear * 100, 0),
+      Status = case_when(
+        Change_Pct > 10 ~ "High Growth",
+        Change_Pct < -10 ~ "Decline",
+        TRUE ~ "Stable"
+      )
+    )
+
+  section_comparison |>
+    gt() |>
+    tab_header(title = "Volume by Section - Current Week vs Last Year") |>
+    fmt_number(columns = c(Current, LastYear, Change), decimals = 0) |>
+    fmt_percent(columns = Change_Pct, scale_values = FALSE, decimals = 1) |>
+    cols_label(LastYear = "Last Year", Change_Pct = "Change %") |>
+    data_color(
+      columns = Change_Pct,
+      palette = c("#dc3545", "#ffc107", "#28a745"),
+      domain = c(-20, 0, 20)
+    )
+} else {
+  # Show current week only if no comparison data available
+  section_current <- activity_data$weekly |>
+    filter(week == current_week) |>
+    select(section, test_count)
+
+  section_current |>
+    gt() |>
+    tab_header(
+      title = "Volume by Section - Current Week",
+      subtitle = "Note: Prior year comparison data not available"
+    ) |>
+    fmt_number(columns = test_count, decimals = 0)
+}
+```
+
+### Weekly Volume Trend
+
+```{r volume-trend, fig.width=10, fig.height=5}
+# Prepare trend data with year overlay
+trend_data <- activity_data$weekly |>
+  mutate(
+    year = year(week),
+    week_of_year = week(week)
+  )
+
+# Get overlapping weeks for comparison
+ggplot(trend_data, aes(x = week, y = test_count, fill = section)) +
+geom_col(position = "stack") +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  labs(
+    title = "Weekly Test Volume by Section",
+    x = NULL,
+    y = "Test Count",
+    fill = "Section"
+  ) +
+  scale_fill_brewer(palette = "Set2")
+```
+
+### Year-over-Year Comparison
+
+```{r yoy-comparison, fig.width=10, fig.height=5}
+# Create aligned comparison
+yoy_data <- activity_data$weekly |>
+  mutate(
+    year = year(week),
+    week_num = week(week)
+  ) |>
+  filter(year >= current_year - 1) |>
+  group_by(week_num, year) |>
+  summarise(total_volume = sum(test_count), .groups = "drop") |>
+  pivot_wider(names_from = year, values_from = total_volume, names_prefix = "year_")
+
+# Plot if we have both years
+if (ncol(yoy_data) >= 3) {
+  yoy_plot <- yoy_data |>
+    pivot_longer(cols = starts_with("year_"), names_to = "year", values_to = "volume") |>
+    mutate(year = gsub("year_", "", year))
+
+  ggplot(yoy_plot, aes(x = week_num, y = volume, color = year, group = year)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    scale_y_continuous(labels = comma) +
+    labs(
+      title = "Weekly Volume: Year-over-Year Comparison",
+      x = "Week of Year",
+      y = "Total Test Count",
+      color = "Year"
+    ) +
+    scale_color_brewer(palette = "Set1")
+}
+```
+
+## Volume by Category
+
+```{r category-volume}
+# Aggregate category data for current month
+current_month <- floor_date(current_week, "month")
+
+category_summary <- activity_data$by_category |>
+  mutate(month = floor_date(date, "month")) |>
+  filter(month == current_month) |>
+  group_by(section, category) |>
+  summarise(
+    total_volume = sum(category_count),
+    avg_daily = mean(category_count),
+    .groups = "drop"
+  ) |>
+  arrange(section, desc(total_volume))
+
+category_summary |>
+  gt(groupname_col = "section") |>
+  tab_header(title = "Volume by Category - Current Month") |>
+  fmt_number(columns = c(total_volume, avg_daily), decimals = 0) |>
+  cols_label(
+    category = "Category",
+    total_volume = "Total Volume",
+    avg_daily = "Avg Daily"
+  )
+```
+
+## Anomaly Detection
+
+Anomalies are identified using statistical thresholds (>2 standard deviations from rolling mean).
+
+```{r anomaly-detection}
+# Calculate anomalies at section level
+section_stats <- activity_data$weekly |>
+  group_by(section) |>
+  arrange(week) |>
+  mutate(
+    rolling_mean = cummean(test_count),
+    rolling_sd = sqrt(cumsum((test_count - rolling_mean)^2) / row_number()),
+    z_score = (test_count - rolling_mean) / rolling_sd,
+    is_anomaly = abs(z_score) > 2
+  ) |>
+  ungroup()
+
+anomalies <- section_stats |>
+  filter(is_anomaly, week >= current_week - weeks(12)) |>
+  arrange(desc(week)) |>
+  select(week, section, test_count, rolling_mean, z_score) |>
+  mutate(
+    deviation = paste0(sprintf("%+.1f", z_score), " SD"),
+    direction = if_else(z_score > 0, "Above Expected", "Below Expected")
+  )
+
+if (nrow(anomalies) > 0) {
+  anomalies |>
+    select(week, section, test_count, deviation, direction) |>
+    gt() |>
+    tab_header(title = "Volume Anomalies - Last 12 Weeks") |>
+    fmt_number(columns = test_count, decimals = 0) |>
+    data_color(
+      columns = deviation,
+      palette = c("#dc3545", "#28a745"),
+      domain = c(-3, 3)
+    )
+} else {
+  cat("No anomalies detected in the last 12 weeks.")
+}
+```
+
+## Section Detail: KBA (Biochemistry)
+
+```{r kba-detail, fig.width=10, fig.height=4}
+kba_data <- activity_data$weekly |>
+  filter(section == "KBA")
+
+ggplot(kba_data, aes(x = week, y = test_count)) +
+  geom_line(color = "#2c7fb8", linewidth = 1) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.2, color = "#7fcdbb") +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "KBA (Biochemistry) Weekly Volume with Trend",
+    x = NULL,
+    y = "Test Count"
+  )
+```
+
+## Section Detail: KMA (Microbiology)
+
+```{r kma-detail, fig.width=10, fig.height=4}
+kma_data <- activity_data$weekly |>
+  filter(section == "KMA")
+
+ggplot(kma_data, aes(x = week, y = test_count)) +
+  geom_line(color = "#31a354", linewidth = 1) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.2, color = "#a1d99b") +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "KMA (Microbiology) Weekly Volume with Trend",
+    subtitle = "Note: Seasonal variation expected (higher in respiratory season)",
+    x = NULL,
+    y = "Test Count"
+  )
+```
+
+## Section Detail: KPA (Pathology)
+
+```{r kpa-detail, fig.width=10, fig.height=4}
+kpa_data <- activity_data$weekly |>
+  filter(section == "KPA")
+
+ggplot(kpa_data, aes(x = week, y = test_count)) +
+  geom_line(color = "#756bb1", linewidth = 1) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.2, color = "#bcbddc") +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  labs(
+    title = "KPA (Pathology) Weekly Volume with Trend",
+    x = NULL,
+    y = "Test Count"
+  )
+```
+
+## Data Quality Notes
+
+- Data is sourced from 3 LIMS systems (KBA, KMA, KPA)
+- Weekly aggregation reduces noise from daily variations
+- Year-over-year comparisons are aligned by week number
+- Anomaly detection uses cumulative statistics to avoid lookback bias
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Weekly*
+
+*Primary audience: Technical/Financial Director, Section Heads*

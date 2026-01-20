@@ -1,0 +1,371 @@
+---
+title: "Error and Incident Tracker"
+subtitle: "Laboratory Error Analysis, Root Cause Tracking, and Corrective Actions"
+author: "Lab Intelligence Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(gt)
+library(purrr)
+
+# Load data
+incident_data <- readRDS("data/incidents.rds")
+
+# Current month
+current_month <- max(incident_data$summary$month)
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ))
+```
+
+## Executive Summary
+
+This report tracks laboratory incidents by phase (pre-analytical, analytical, post-analytical), root cause, and resolution status. Quality management requires continuous monitoring and improvement.
+
+```{r summary-stats}
+# Current month summary
+current_incidents <- incident_data$events |>
+  filter(floor_date(as.Date(datetime), "month") == current_month)
+
+summary_stats <- current_incidents |>
+  summarise(
+    total = n(),
+    high_severity = sum(severity == "High"),
+    medium_severity = sum(severity == "Medium"),
+    low_severity = sum(severity == "Low"),
+    resolved = sum(status == "Resolved"),
+    open = sum(status == "Open"),
+    mean_resolution_hours = mean(resolution_hours[status == "Resolved"])
+  )
+
+tibble(
+  Metric = c("Total Incidents", "High Severity", "Medium Severity", "Low Severity",
+             "Resolved", "Open", "Mean Resolution Time"),
+  Value = c(
+    summary_stats$total,
+    summary_stats$high_severity,
+    summary_stats$medium_severity,
+    summary_stats$low_severity,
+    summary_stats$resolved,
+    summary_stats$open,
+    sprintf("%.1f hours", summary_stats$mean_resolution_hours)
+  )
+) |>
+  gt() |>
+  tab_header(
+    title = "Incident Summary",
+    subtitle = format(current_month, "%B %Y")
+  )
+```
+
+## Incidents by Phase
+
+```{r by-phase, fig.width=10, fig.height=5}
+phase_trend <- incident_data$summary |>
+  ggplot(aes(x = month, y = incident_count, fill = category)) +
+  geom_area(alpha = 0.7) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Incidents by Phase Over Time",
+    x = NULL,
+    y = "Incident Count",
+    fill = "Phase"
+  )
+
+phase_trend
+```
+
+## Phase Distribution (Current Month)
+
+```{r phase-pie, fig.width=8, fig.height=5}
+phase_current <- current_incidents |>
+  count(category) |>
+  mutate(pct = n / sum(n) * 100)
+
+ggplot(phase_current, aes(x = "", y = n, fill = category)) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = sprintf("%s\n%.0f%%", category, pct)),
+            position = position_stack(vjust = 0.5), color = "white", fontface = "bold") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Incident Distribution by Phase") +
+  theme_void() +
+  theme(legend.position = "bottom")
+```
+
+## Incident Types Detail
+
+```{r incident-types}
+type_summary <- incident_data$events |>
+  filter(floor_date(as.Date(datetime), "month") >= current_month - months(3)) |>
+  count(category, type, severity) |>
+  arrange(category, desc(n))
+
+type_summary |>
+  gt(groupname_col = "category") |>
+  tab_header(title = "Incident Types - Last 3 Months") |>
+  data_color(
+    columns = severity,
+    palette = c("High" = "#dc3545", "Medium" = "#ffc107", "Low" = "#28a745")
+  )
+```
+
+## Severity Trend
+
+```{r severity-trend, fig.width=10, fig.height=4}
+severity_monthly <- incident_data$events |>
+  mutate(month = floor_date(as.Date(datetime), "month")) |>
+  count(month, severity) |>
+  pivot_wider(names_from = severity, values_from = n, values_fill = 0)
+
+severity_long <- severity_monthly |>
+  pivot_longer(-month, names_to = "severity", values_to = "count") |>
+  mutate(severity = factor(severity, levels = c("High", "Medium", "Low")))
+
+ggplot(severity_long, aes(x = month, y = count, fill = severity)) +
+  geom_col() +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  scale_fill_manual(values = c("High" = "#dc3545", "Medium" = "#ffc107", "Low" = "#28a745")) +
+  labs(
+    title = "Incidents by Severity Over Time",
+    x = NULL,
+    y = "Count",
+    fill = "Severity"
+  )
+```
+
+## Root Cause Analysis
+
+```{r root-cause, fig.width=10, fig.height=5}
+root_cause <- incident_data$events |>
+  filter(floor_date(as.Date(datetime), "month") >= current_month - months(3)) |>
+  count(root_cause) |>
+  arrange(desc(n)) |>
+  mutate(pct = n / sum(n) * 100)
+
+ggplot(root_cause, aes(x = reorder(root_cause, n), y = n)) +
+  geom_col(fill = "#2c7fb8") +
+  geom_text(aes(label = sprintf("%.0f%%", pct)), hjust = -0.2) +
+  coord_flip() +
+  labs(
+    title = "Root Cause Distribution - Last 3 Months",
+    x = NULL,
+    y = "Count"
+  )
+```
+
+## Root Cause by Phase
+
+```{r root-cause-phase}
+root_phase <- incident_data$events |>
+  filter(floor_date(as.Date(datetime), "month") >= current_month - months(3)) |>
+  count(category, root_cause) |>
+  pivot_wider(names_from = category, values_from = n, values_fill = 0) |>
+  mutate(Total = `Pre-analytical` + Analytical + `Post-analytical`) |>
+  arrange(desc(Total))
+
+root_phase |>
+  gt() |>
+  tab_header(title = "Root Cause by Lab Phase") |>
+  cols_label(root_cause = "Root Cause")
+```
+
+## Resolution Time Analysis
+
+```{r resolution-time, fig.width=10, fig.height=5}
+resolved_incidents <- incident_data$events |>
+  filter(status == "Resolved")
+
+ggplot(resolved_incidents, aes(x = severity, y = resolution_hours, fill = severity)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("High" = "#dc3545", "Medium" = "#ffc107", "Low" = "#28a745")) +
+  scale_y_log10() +
+  labs(
+    title = "Resolution Time by Severity",
+    x = "Severity",
+    y = "Resolution Time (hours, log scale)"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Section Performance
+
+```{r section-performance}
+section_perf <- incident_data$events |>
+  filter(floor_date(as.Date(datetime), "month") >= current_month - months(3)) |>
+  group_by(section) |>
+  summarise(
+    total = n(),
+    high_severity = sum(severity == "High"),
+    mean_resolution = mean(resolution_hours[status == "Resolved"]),
+    pct_resolved = sum(status == "Resolved") / n() * 100,
+    .groups = "drop"
+  )
+
+section_perf |>
+  gt() |>
+  tab_header(title = "Performance by Section - Last 3 Months") |>
+  fmt_number(columns = c(mean_resolution, pct_resolved), decimals = 1) |>
+  cols_label(
+    total = "Total",
+    high_severity = "High Severity",
+    mean_resolution = "Mean Resolution (hrs)",
+    pct_resolved = "% Resolved"
+  )
+```
+
+## Open Incidents
+
+High-priority incidents requiring attention.
+
+```{r open-incidents}
+open_incidents <- incident_data$events |>
+  filter(status == "Open") |>
+  arrange(desc(severity == "High"), datetime) |>
+  mutate(
+    date = as.Date(datetime),
+    days_open = as.numeric(Sys.Date() - date)
+  ) |>
+  select(incident_id, date, days_open, category, type, severity, section, root_cause) |>
+  head(15)
+
+if (nrow(open_incidents) > 0) {
+  open_incidents |>
+    gt() |>
+    tab_header(
+      title = "Open Incidents",
+      subtitle = "Requires resolution"
+    ) |>
+    data_color(
+      columns = severity,
+      palette = c("High" = "#dc3545", "Medium" = "#ffc107", "Low" = "#28a745")
+    ) |>
+    data_color(
+      columns = days_open,
+      palette = c("#28a745", "#ffc107", "#dc3545"),
+      domain = c(0, 7, 30)
+    )
+}
+```
+
+## Recurrence Analysis
+
+Identify patterns of repeat incidents.
+
+```{r recurrence}
+recurrence <- incident_data$events |>
+  filter(floor_date(as.Date(datetime), "month") >= current_month - months(6)) |>
+  count(type, section) |>
+  filter(n >= 5) |>
+  arrange(desc(n)) |>
+  mutate(
+    concern_level = case_when(
+      n >= 20 ~ "Critical - Systemic issue",
+      n >= 10 ~ "High - Process review needed",
+      n >= 5 ~ "Moderate - Monitor trend"
+    )
+  )
+
+if (nrow(recurrence) > 0) {
+  recurrence |>
+    gt() |>
+    tab_header(
+      title = "Recurring Issues - Last 6 Months",
+      subtitle = "Incidents occurring 5+ times"
+    ) |>
+    cols_label(n = "Count") |>
+    data_color(
+      columns = concern_level,
+      palette = c(
+        "Critical - Systemic issue" = "#dc3545",
+        "High - Process review needed" = "#ffc107",
+        "Moderate - Monitor trend" = "#17a2b8"
+      )
+    )
+}
+```
+
+## Corrective Actions Summary
+
+```{r corrective-actions}
+ca_summary <- incident_data$events |>
+  filter(floor_date(as.Date(datetime), "month") >= current_month - months(3)) |>
+  count(corrective_action) |>
+  arrange(desc(n)) |>
+  mutate(pct = n / sum(n) * 100)
+
+ca_summary |>
+  gt() |>
+  tab_header(title = "Corrective Actions Taken - Last 3 Months") |>
+  fmt_number(columns = pct, decimals = 1) |>
+  cols_label(
+    corrective_action = "Action",
+    pct = "Percentage"
+  )
+```
+
+## Monthly Trend Summary
+
+```{r monthly-summary}
+monthly_summary <- incident_data$events |>
+  mutate(month = floor_date(as.Date(datetime), "month")) |>
+  group_by(month) |>
+  summarise(
+    total = n(),
+    high_severity = sum(severity == "High"),
+    resolved = sum(status == "Resolved"),
+    mean_resolution = mean(resolution_hours[status == "Resolved"]),
+    .groups = "drop"
+  ) |>
+  arrange(desc(month))
+
+monthly_summary |>
+  gt() |>
+  tab_header(title = "Monthly Incident Summary") |>
+  fmt_date(columns = month, date_style = "yMMM") |>
+  fmt_number(columns = mean_resolution, decimals = 1) |>
+  cols_label(
+    high_severity = "High Severity",
+    mean_resolution = "Mean Resolution (hrs)"
+  )
+```
+
+## Recommendations
+
+Based on incident analysis:
+
+1. **Pre-analytical Focus**: Specimen handling accounts for majority of incidents
+   - Reinforce labeling protocols
+   - Review phlebotomy training
+
+2. **Human Error Mitigation**: Largest root cause category
+   - Implement checklists for high-risk procedures
+   - Consider automation opportunities
+
+3. **Resolution Time**: High severity incidents should target <24 hour resolution
+   - Current mean: `r sprintf("%.1f hours", mean(incident_data$events$resolution_hours[incident_data$events$severity == "High" & incident_data$events$status == "Resolved"]))`
+
+---
+
+*Report generated: `r Sys.time()`*
+
+*Data refresh: Daily*
+
+*Primary audience: Medical Lab Director, Quality Manager, Section Heads*
