@@ -1,0 +1,133 @@
+@startuml data-sensitivity-layers
+' Data Sensitivity & AI Development Framework
+' 6-layer architecture for protecting patient data while enabling AI-assisted development
+'
+' Render with: plantuml data-layers.puml
+' Or online: https://www.plantuml.com/plantuml
+
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Inter, Helvetica, Arial, sans-serif
+skinparam defaultFontSize 11
+
+skinparam package {
+  BorderThickness 2
+  FontStyle bold
+}
+
+skinparam component {
+  BorderThickness 1
+  BackgroundColor white
+  FontStyle bold
+}
+
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #FBC02D
+}
+
+title **Data Sensitivity & AI Development Framework**\n//AI never sees patient data — Humans control the boundaries//
+
+' ═══════════════════════════════════════════════════════════════════════════════
+' SENSITIVE DATA ZONE (Red)
+' ═══════════════════════════════════════════════════════════════════════════════
+
+package "SENSITIVE DATA ZONE" as sensitive #FFEBEE {
+  skinparam package<<sensitive>> {
+    BorderColor #C62828
+    FontColor #C62828
+  }
+
+  component "**Layer 1: Production Databases**\n\nRaw patient data, LIS/LIMS\n---\n<size:10>//Human: Read-only | AI: None//</size>" as L1 #FFCDD2
+  component "**Layer 2: Analytics Data Store**\n\nAggregated, mostly de-identified\n(some small-n observations)\n---\n<size:10>//Human: Read/Write | AI: None//</size>" as L2 #FFCDD2
+}
+
+' ═══════════════════════════════════════════════════════════════════════════════
+' SYNTHETIC DATA ZONE (Green)
+' ═══════════════════════════════════════════════════════════════════════════════
+
+package "SYNTHETIC DATA ZONE" as synthetic #E8F5E9 {
+  skinparam package<<synthetic>> {
+    BorderColor #2E7D32
+    FontColor #2E7D32
+  }
+
+  component "**Layer 3: Synthetic Data**\n\nSynthpop-generated data\nMatches L2 structure & distributions\n---\n<size:10>//Human: Read/Write | AI: Read//</size>" as L3 #C8E6C9
+}
+
+' ═══════════════════════════════════════════════════════════════════════════════
+' DEVELOPMENT ZONE (Blue)
+' ═══════════════════════════════════════════════════════════════════════════════
+
+package "DEVELOPMENT ZONE" as development #E3F2FD {
+  skinparam package<<development>> {
+    BorderColor #1565C0
+    FontColor #1565C0
+  }
+
+  component "**Layer 4: Development Environment**\n\nCode, reports, dashboards in dev\nAI-assisted development\n---\n<size:10>//Human: Read/Write | AI: Read/Write//</size>" as L4 #BBDEFB
+}
+
+' ═══════════════════════════════════════════════════════════════════════════════
+' DEPLOYMENT ZONE (Orange)
+' ═══════════════════════════════════════════════════════════════════════════════
+
+package "DEPLOYMENT ZONE" as deployment #FFF3E0 {
+  skinparam package<<deployment>> {
+    BorderColor #EF6C00
+    FontColor #EF6C00
+  }
+
+  component "**Layer 5: Staging**\n\nValidate code against real data\nBefore production deployment\n---\n<size:10>//Human: Full | AI: None//</size>" as L5 #FFE0B2
+  component "**Layer 6: Production**\n\nLive reports & dashboards\nServing end users\n---\n<size:10>//Human: Full | AI: None//</size>" as L6 #FFE0B2
+}
+
+' ═══════════════════════════════════════════════════════════════════════════════
+' DATA FLOWS
+' ═══════════════════════════════════════════════════════════════════════════════
+
+' Within sensitive zone
+L1 -[#5A9AB8,thickness=2]-> L2 : <size:10>ETL\n(human-written)</size>
+
+' Synthetic data generation
+L2 -[#2E7D32,thickness=2]-> L3 : <size:10>Synthpop training\n(human-supervised)</size>
+
+' Development data source
+L3 -[#1565C0,thickness=2]-> L4 : <size:10>Data source</size>
+
+' Code promotion
+L4 -[#EF6C00,thickness=2]-> L5 : <size:10>Code promotion\n(human review)</size>
+
+' Real data connections (dashed)
+L2 -[#C62828,dashed,thickness=2]-> L5 : <size:10>Real data\nsource</size>
+L2 -[#C62828,dashed,thickness=2]-> L6 : <size:10>Real data\nsource</size>
+
+' Deployment
+L5 -[#5A9AB8,thickness=2]-> L6 : <size:10>Deploy</size>
+
+' ═══════════════════════════════════════════════════════════════════════════════
+' LEGEND
+' ═══════════════════════════════════════════════════════════════════════════════
+
+legend right
+  |= Zone |= AI Access |
+  | <#FFEBEE> Sensitive | None |
+  | <#E8F5E9> Synthetic | Read |
+  | <#E3F2FD> Development | Read/Write |
+  | <#FFF3E0> Deployment | None |
+  ---
+  <size:10>Dashed lines = real patient data flow</size>
+  <size:10>Solid lines = synthetic/code flow</size>
+endlegend
+
+note as N1
+  **Key Principles:**
+  1. AI never sees patient data
+  2. Humans control the boundaries
+  3. Accept pragmatic trade-offs
+  4. Clear access rules
+end note
+
+N1 .. sensitive
+
+@enduml
